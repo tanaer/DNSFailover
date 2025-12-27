@@ -18,13 +18,14 @@ function generateSessionId() {
 
 // 获取登录页面
 function getLoginHTML(siteKey, error = '') {
+  const hasTurnstile = siteKey && siteKey.length > 0;
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DNS Failover - 登录</title>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  ${hasTurnstile ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ''}
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; justify-content: center; align-items: center; }
@@ -52,17 +53,11 @@ function getLoginHTML(siteKey, error = '') {
         <label>密码</label>
         <input type="password" name="password" required placeholder="请输入管理密码" autofocus>
       </div>
-      <div class="turnstile-wrapper">
-        <div class="cf-turnstile" data-sitekey="${siteKey}" data-callback="onTurnstileSuccess"></div>
-      </div>
-      <button type="submit" class="btn" id="submitBtn" disabled>登 录</button>
+      ${hasTurnstile ? '<div class="turnstile-wrapper"><div class="cf-turnstile" data-sitekey="' + siteKey + '" data-callback="onTurnstileSuccess"></div></div>' : ''}
+      <button type="submit" class="btn" id="submitBtn" ${hasTurnstile ? 'disabled' : ''}>登 录</button>
     </form>
   </div>
-  <script>
-    function onTurnstileSuccess(token) {
-      document.getElementById('submitBtn').disabled = false;
-    }
-  </script>
+  ${hasTurnstile ? '<script>function onTurnstileSuccess(token) { document.getElementById("submitBtn").disabled = false; }</script>' : ''}
 </body>
 </html>`;
 }
