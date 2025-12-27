@@ -970,10 +970,11 @@ export default {
         sessions[sessionId] = { created: Date.now(), ip };
         await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
 
-        return new Response(null, {
-          status: 302,
+        // 登录成功，返回管理页面并设置 Cookie
+        return new Response(getHTML(), {
+          status: 200,
           headers: {
-            'Location': '/',
+            'Content-Type': 'text/html; charset=utf-8',
             'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`
           }
         });
