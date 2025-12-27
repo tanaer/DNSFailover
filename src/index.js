@@ -496,7 +496,7 @@ function getHTML() {
       document.getElementById('policy-id').value = p.id;
       document.getElementById('policy-name').value = p.name;
       const domains = Array.isArray(p.domains) ? p.domains : [p.domain].filter(Boolean);
-      document.getElementById('policy-domains').value = domains.join('\n');
+      document.getElementById('policy-domains').value = domains.join('\\n');
       document.getElementById('policy-record-type').value = p.recordType;
       document.getElementById('policy-content').value = p.content;
       document.getElementById('policy-api-id').value = p.apiId;
@@ -509,7 +509,7 @@ function getHTML() {
       e.preventDefault();
       const id = document.getElementById('policy-id').value || crypto.randomUUID();
       const domainsText = document.getElementById('policy-domains').value;
-      const domains = domainsText.split('\n').map(d => d.trim()).filter(d => d);
+      const domains = domainsText.split('\\n').map(d => d.trim()).filter(d => d);
       const data = {
         id,
         name: document.getElementById('policy-name').value,
