@@ -1017,9 +1017,16 @@ export default {
         const cookie = request.headers.get('Cookie') || '';
         const match = cookie.match(/session=([^;]+)/);
         if (match) {
-          const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
-          delete sessions[match[1]];
-          await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+          try {
+            const data = await env.KV.get(KEYS.AUTH_SESSIONS);
+            if (data) {
+              const sessions = JSON.parse(data);
+              delete sessions[match[1]];
+              await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
+            }
+          } catch (e) {
+            console.error('Logout error:', e);
+          }
         }
         return new Response(null, {
           status: 302,
@@ -1030,36 +1037,10 @@ export default {
         });
       }
 
-      // 调试端点 - 检查会话状态
-      if (path === '/auth/debug' && method === 'GET') {
-        const cookie = request.headers.get('Cookie') || '';
-        const match = cookie.match(/session=([^;]+)/);
-        const sessionId = match ? match[1] : null;
-        
-        let sessions = {};
-        let kvError = null;
-        try {
-          const data = await env.KV.get(KEYS.AUTH_SESSIONS);
-          if (data) {
-            sessions = JSON.parse(data);
-          }
-        } catch (e) {
-          kvError = e.message;
-        }
-        
-        const sessionExists = sessionId ? !!sessions[sessionId] : false;
-        const sessionCount = Object.keys(sessions).length;
-        
-        return Response.json({
-          hasCookie: !!cookie,
-          cookieValue: cookie.substring(0, 50) + '...',
-          hasSessionMatch: !!match,
-          sessionId: sessionId ? sessionId.substring(0, 10) + '...' : null,
-          sessionExists,
-          sessionCount,
-          kvError,
-          authenticated: await isAuthenticated(request, env)
-        }, { headers: corsHeaders });
+      // 清理并重置会话存储（管理用）
+      if (path === '/auth/reset' && method === 'POST') {
+        await env.KV.delete(KEYS.AUTH_SESSIONS);
+        return Response.json({ success: true, message: 'Sessions cleared' }, { headers: corsHeaders });
       }
 
       // 需要认证的路由
