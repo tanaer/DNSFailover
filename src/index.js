@@ -118,9 +118,22 @@ function getHTML() {
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     .empty-state { text-align: center; padding: 40px; color: #666; }
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+    .loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 3000; }
+    .loading-overlay.show { display: flex; }
+    .loading-box { background: #fff; padding: 30px 50px; border-radius: 12px; text-align: center; }
+    .loading-spinner { width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #4361ee; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+  <!-- Loading 遮罩层 -->
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="loading-spinner"></div>
+      <div id="loading-text">执行中，请稍候...</div>
+    </div>
+  </div>
+
   <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
       <h1>🛡️ DNS Failover 管理面板</h1>
@@ -602,18 +615,31 @@ function getHTML() {
       }
     }
 
+    // Loading 控制
+    function showLoading(text = '执行中，请稍候...') {
+      document.getElementById('loading-text').textContent = text;
+      document.getElementById('loading-overlay').classList.add('show');
+    }
+    function hideLoading() {
+      document.getElementById('loading-overlay').classList.remove('show');
+    }
+
     async function executePolicy(id) {
       if (!confirm('确定要立即执行此策略吗？这将修改DNS记录。')) return;
+      showLoading('正在执行 DNS 切换...');
       try {
         const res = await fetch('/api/policies/' + id + '/execute', { method: 'POST' });
         const data = await res.json();
+        hideLoading();
         if (data.success) {
-          showToast('策略执行成功');
+          const msg = data.updated ? '策略执行成功！更新 ' + data.updated + ' 个域名' : '策略执行成功';
+          showToast(msg);
           loadLogs();
         } else {
           showToast('执行失败: ' + data.error, 'error');
         }
       } catch (e) {
+        hideLoading();
         showToast('执行失败: ' + e.message, 'error');
       }
     }
