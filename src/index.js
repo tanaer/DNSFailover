@@ -5,8 +5,67 @@ const KEYS = {
   FAILOVER_POLICIES: 'failover_policies',
   MONITORS: 'monitors',
   SWITCH_LOGS: 'switch_logs',
-  MONITOR_STATUS: 'monitor_status'
+  MONITOR_STATUS: 'monitor_status',
+  AUTH_SESSIONS: 'auth_sessions'
 };
+
+// 生成随机会话 ID
+function generateSessionId() {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 获取登录页面
+function getLoginHTML(siteKey, error = '') {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DNS Failover - 登录</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; justify-content: center; align-items: center; }
+    .login-box { background: #fff; border-radius: 16px; padding: 40px; width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .login-box h1 { text-align: center; color: #333; margin-bottom: 10px; font-size: 24px; }
+    .login-box p { text-align: center; color: #666; margin-bottom: 30px; }
+    .form-group { margin-bottom: 20px; }
+    .form-group label { display: block; margin-bottom: 8px; font-weight: 500; color: #333; }
+    .form-group input { width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: border-color 0.3s; }
+    .form-group input:focus { outline: none; border-color: #667eea; }
+    .btn { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
+    .btn:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+    .error { background: #fee; color: #c00; padding: 12px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
+    .turnstile-wrapper { display: flex; justify-content: center; margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>🛡️ DNS Failover</h1>
+    <p>请输入密码登录管理面板</p>
+    ${error ? '<div class="error">' + error + '</div>' : ''}
+    <form id="loginForm" method="POST" action="/auth/login">
+      <div class="form-group">
+        <label>密码</label>
+        <input type="password" name="password" required placeholder="请输入管理密码" autofocus>
+      </div>
+      <div class="turnstile-wrapper">
+        <div class="cf-turnstile" data-sitekey="${siteKey}" data-callback="onTurnstileSuccess"></div>
+      </div>
+      <button type="submit" class="btn" id="submitBtn" disabled>登 录</button>
+    </form>
+  </div>
+  <script>
+    function onTurnstileSuccess(token) {
+      document.getElementById('submitBtn').disabled = false;
+    }
+  </script>
+</body>
+</html>`;
+}
 
 // 获取 HTML 页面
 function getHTML() {
@@ -68,7 +127,10 @@ function getHTML() {
 </head>
 <body>
   <div class="container">
-    <h1>🛡️ DNS Failover 管理面板</h1>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+      <h1>🛡️ DNS Failover 管理面板</h1>
+      <button class="btn btn-secondary" onclick="logout()">退出登录</button>
+    </div>
     
     <div class="tabs">
       <button class="tab active" data-panel="api-config">API 配置</button>
@@ -784,9 +846,53 @@ function getHTML() {
       loadStatus();
       showToast('状态已刷新');
     }
+
+    async function logout() {
+      try {
+        await fetch('/auth/logout', { method: 'POST' });
+        window.location.reload();
+      } catch (e) {
+        showToast('退出失败', 'error');
+      }
+    }
   </script>
 </body>
 </html>`;
+}
+
+// 验证 Turnstile token
+async function verifyTurnstile(token, secretKey, ip) {
+  const formData = new FormData();
+  formData.append('secret', secretKey);
+  formData.append('response', token);
+  formData.append('remoteip', ip);
+  
+  const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+    method: 'POST',
+    body: formData
+  });
+  const result = await response.json();
+  return result.success;
+}
+
+// 检查会话是否有效
+async function isAuthenticated(request, env) {
+  const cookie = request.headers.get('Cookie') || '';
+  const match = cookie.match(/session=([^;]+)/);
+  if (!match) return false;
+  
+  const sessionId = match[1];
+  const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
+  const session = sessions[sessionId];
+  
+  if (!session) return false;
+  // 会话 24 小时过期
+  if (Date.now() - session.created > 24 * 60 * 60 * 1000) {
+    delete sessions[sessionId];
+    await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+    return false;
+  }
+  return true;
 }
 
 // 主请求处理
@@ -795,6 +901,11 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    // 获取配置
+    const AUTH_PASSWORD = env.AUTH_PASSWORD || 'admin123';
+    const TURNSTILE_SITE_KEY = env.TURNSTILE_SITE_KEY || '';
+    const TURNSTILE_SECRET_KEY = env.TURNSTILE_SECRET_KEY || '';
 
     // CORS 处理
     if (method === 'OPTIONS') {
@@ -813,6 +924,84 @@ export default {
     };
 
     try {
+      // 登录页面
+      if (path === '/auth/login' && method === 'GET') {
+        return new Response(getLoginHTML(TURNSTILE_SITE_KEY), {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+      }
+
+      // 登录处理
+      if (path === '/auth/login' && method === 'POST') {
+        const formData = await request.formData();
+        const password = formData.get('password');
+        const turnstileToken = formData.get('cf-turnstile-response');
+        const ip = request.headers.get('CF-Connecting-IP') || '';
+
+        // 验证 Turnstile（如果配置了）
+        if (TURNSTILE_SECRET_KEY) {
+          const turnstileValid = await verifyTurnstile(turnstileToken, TURNSTILE_SECRET_KEY, ip);
+          if (!turnstileValid) {
+            return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '人机验证失败，请重试'), {
+              headers: { 'Content-Type': 'text/html; charset=utf-8' }
+            });
+          }
+        }
+
+        // 验证密码
+        if (password !== AUTH_PASSWORD) {
+          return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '密码错误'), {
+            headers: { 'Content-Type': 'text/html; charset=utf-8' }
+          });
+        }
+
+        // 创建会话
+        const sessionId = generateSessionId();
+        const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
+        sessions[sessionId] = { created: Date.now(), ip };
+        await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': '/',
+            'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
+          }
+        });
+      }
+
+      // 登出处理
+      if (path === '/auth/logout' && method === 'POST') {
+        const cookie = request.headers.get('Cookie') || '';
+        const match = cookie.match(/session=([^;]+)/);
+        if (match) {
+          const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
+          delete sessions[match[1]];
+          await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+        }
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': '/auth/login',
+            'Set-Cookie': 'session=; Path=/; HttpOnly; Max-Age=0'
+          }
+        });
+      }
+
+      // 需要认证的路由
+      const authenticated = await isAuthenticated(request, env);
+      if (!authenticated) {
+        // API 请求返回 401
+        if (path.startsWith('/api/')) {
+          return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
+        }
+        // 页面请求重定向到登录页
+        return new Response(null, {
+          status: 302,
+          headers: { 'Location': '/auth/login' }
+        });
+      }
+
       // 首页
       if (path === '/' || path === '') {
         return new Response(getHTML(), {
