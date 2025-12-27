@@ -167,8 +167,8 @@ function getHTML() {
           <input type="text" id="policy-name" required placeholder="例如: 切换到备用服务器">
         </div>
         <div class="form-group">
-          <label>完整域名</label>
-          <input type="text" id="policy-domain" required placeholder="例如: www.example.com">
+          <label>域名列表（每行一个域名）</label>
+          <textarea id="policy-domains" required rows="4" placeholder="www.example.com&#10;api.example.com&#10;cdn.example.com"></textarea>
         </div>
         <div class="form-group">
           <label>记录类型</label>
@@ -187,8 +187,17 @@ function getHTML() {
           <select id="policy-api-id" required></select>
         </div>
         <div class="form-group">
-          <label>TTL (秒)</label>
-          <input type="number" id="policy-ttl" value="300" min="60">
+          <label>TTL</label>
+          <select id="policy-ttl">
+            <option value="1">自动</option>
+            <option value="60">1 分钟</option>
+            <option value="120">2 分钟</option>
+            <option value="300">5 分钟</option>
+            <option value="600">10 分钟</option>
+            <option value="1800">30 分钟</option>
+            <option value="3600">1 小时</option>
+            <option value="86400">1 天</option>
+          </select>
         </div>
         <div class="form-group">
           <label>代理状态</label>
@@ -453,12 +462,14 @@ function getHTML() {
       }
       container.innerHTML = policies.map(p => {
         const api = apiConfigs.find(a => a.id === p.apiId);
+        const domains = Array.isArray(p.domains) ? p.domains : [p.domain].filter(Boolean);
+        const domainDisplay = domains.length > 1 ? domains[0] + ' 等' + domains.length + '个域名' : domains[0];
         return \`
           <div class="list-item">
             <div class="list-item-info">
               <h4>\${p.name}</h4>
-              <p>\${p.domain} → \${p.recordType} → \${p.content}</p>
-              <p>使用API: \${api ? api.name : '未知'}</p>
+              <p>\${domainDisplay} → \${p.recordType} → \${p.content}</p>
+              <p>使用API: \${api ? api.name : '未知'} | TTL: \${p.ttl == 1 ? '自动' : p.ttl + '秒'}</p>
             </div>
             <div class="list-item-actions">
               <button class="btn btn-success btn-sm" onclick="executePolicy('\${p.id}')">立即执行</button>
@@ -474,7 +485,7 @@ function getHTML() {
       document.getElementById('policy-modal-title').textContent = '添加 Failover 策略';
       document.getElementById('policy-form').reset();
       document.getElementById('policy-id').value = '';
-      document.getElementById('policy-ttl').value = '300';
+      document.getElementById('policy-ttl').value = '1';
       showModal('policy-modal');
     }
 
@@ -484,11 +495,12 @@ function getHTML() {
       document.getElementById('policy-modal-title').textContent = '编辑 Failover 策略';
       document.getElementById('policy-id').value = p.id;
       document.getElementById('policy-name').value = p.name;
-      document.getElementById('policy-domain').value = p.domain;
+      const domains = Array.isArray(p.domains) ? p.domains : [p.domain].filter(Boolean);
+      document.getElementById('policy-domains').value = domains.join('\n');
       document.getElementById('policy-record-type').value = p.recordType;
       document.getElementById('policy-content').value = p.content;
       document.getElementById('policy-api-id').value = p.apiId;
-      document.getElementById('policy-ttl').value = p.ttl || 300;
+      document.getElementById('policy-ttl').value = p.ttl || 1;
       document.getElementById('policy-proxied').value = String(p.proxied !== false);
       showModal('policy-modal');
     }
@@ -496,14 +508,16 @@ function getHTML() {
     document.getElementById('policy-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const id = document.getElementById('policy-id').value || crypto.randomUUID();
+      const domainsText = document.getElementById('policy-domains').value;
+      const domains = domainsText.split('\n').map(d => d.trim()).filter(d => d);
       const data = {
         id,
         name: document.getElementById('policy-name').value,
-        domain: document.getElementById('policy-domain').value,
+        domains: domains,
         recordType: document.getElementById('policy-record-type').value,
         content: document.getElementById('policy-content').value,
         apiId: document.getElementById('policy-api-id').value,
-        ttl: parseInt(document.getElementById('policy-ttl').value) || 300,
+        ttl: parseInt(document.getElementById('policy-ttl').value) || 1,
         proxied: document.getElementById('policy-proxied').value === 'true'
       };
       try {
@@ -698,18 +712,25 @@ function getHTML() {
         container.innerHTML = '<div class="empty-state">暂无切换日志</div>';
         return;
       }
-      container.innerHTML = logs.map(log => \`
+      container.innerHTML = logs.map(log => {
+        const domains = Array.isArray(log.domains) ? log.domains : [log.domain].filter(Boolean);
+        const domainDisplay = domains.join(', ');
+        const resultInfo = log.successCount !== undefined ? 
+          ' (成功: ' + log.successCount + ', 失败: ' + (log.errorCount || 0) + ')' : '';
+        const errorsHtml = log.errors && log.errors.length > 0 ? '<br>错误: ' + log.errors.join('; ') : '';
+        return \`
         <div class="log-item">
           <div class="time">\${new Date(log.time).toLocaleString()}</div>
           <div class="content">
-            <strong>\${log.type === 'failover' ? '⚠️ 故障切换' : '✅ 恢复切换'}</strong><br>
+            <strong>\${log.type === 'failover' ? '⚠️ 故障切换' : '✅ 恢复切换'}\${resultInfo}</strong><br>
             监控: \${log.monitorName || '手动执行'}<br>
             策略: \${log.policyName}<br>
-            域名: \${log.domain} → \${log.content}<br>
-            \${log.reason ? '原因: ' + log.reason : ''}
+            域名: \${domainDisplay} → \${log.content}<br>
+            \${log.reason ? '原因: ' + log.reason : ''}\${errorsHtml}
           </div>
         </div>
-      \`).join('');
+      \`;
+      }).join('');
     }
 
     async function clearLogs() {
@@ -1008,62 +1029,80 @@ async function testCloudflareApi(zoneId, token) {
 // 执行 Failover 策略
 async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName = null, type = 'failover') {
   try {
-    // 首先获取 DNS 记录 ID
-    const listResponse = await fetch(
-      `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records?name=${policy.domain}&type=${policy.recordType}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${apiConfig.token}`,
-          'Content-Type': 'application/json'
+    // 支持多域名，兼容旧版单域名格式
+    const domains = Array.isArray(policy.domains) ? policy.domains : [policy.domain].filter(Boolean);
+    const results = [];
+    const errors = [];
+
+    for (const domain of domains) {
+      try {
+        // 获取 DNS 记录 ID
+        const listResponse = await fetch(
+          `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records?name=${domain}&type=${policy.recordType}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${apiConfig.token}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        const listData = await listResponse.json();
+        
+        // TTL: 1 表示自动
+        const ttl = policy.ttl || 1;
+        
+        if (!listData.success || listData.result.length === 0) {
+          // 记录不存在，创建新记录
+          const createResponse = await fetch(
+            `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiConfig.token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                type: policy.recordType,
+                name: domain,
+                content: policy.content,
+                ttl: ttl,
+                proxied: policy.proxied !== false
+              })
+            }
+          );
+          const createData = await createResponse.json();
+          if (!createData.success) {
+            errors.push(`${domain}: ${createData.errors?.[0]?.message || 'Failed to create'}`);
+          } else {
+            results.push(domain);
+          }
+        } else {
+          // 更新现有记录
+          const recordId = listData.result[0].id;
+          const updateResponse = await fetch(
+            `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records/${recordId}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'Authorization': `Bearer ${apiConfig.token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                content: policy.content,
+                ttl: ttl,
+                proxied: policy.proxied !== false
+              })
+            }
+          );
+          const updateData = await updateResponse.json();
+          if (!updateData.success) {
+            errors.push(`${domain}: ${updateData.errors?.[0]?.message || 'Failed to update'}`);
+          } else {
+            results.push(domain);
+          }
         }
-      }
-    );
-    const listData = await listResponse.json();
-    
-    if (!listData.success || listData.result.length === 0) {
-      // 如果记录不存在，创建新记录
-      const createResponse = await fetch(
-        `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiConfig.token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            type: policy.recordType,
-            name: policy.domain,
-            content: policy.content,
-            ttl: policy.ttl || 300,
-            proxied: policy.proxied !== false
-          })
-        }
-      );
-      const createData = await createResponse.json();
-      if (!createData.success) {
-        return { success: false, error: createData.errors?.[0]?.message || 'Failed to create record' };
-      }
-    } else {
-      // 更新现有记录
-      const recordId = listData.result[0].id;
-      const updateResponse = await fetch(
-        `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records/${recordId}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${apiConfig.token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            content: policy.content,
-            ttl: policy.ttl || 300,
-            proxied: policy.proxied !== false
-          })
-        }
-      );
-      const updateData = await updateResponse.json();
-      if (!updateData.success) {
-        return { success: false, error: updateData.errors?.[0]?.message || 'Failed to update record' };
+      } catch (e) {
+        errors.push(`${domain}: ${e.message}`);
       }
     }
 
@@ -1074,9 +1113,12 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
       type: type,
       monitorName: monitorName,
       policyName: policy.name,
-      domain: policy.domain,
+      domains: domains,
       content: policy.content,
-      reason: reason
+      reason: reason,
+      successCount: results.length,
+      errorCount: errors.length,
+      errors: errors.length > 0 ? errors : undefined
     });
     // 只保留最近 100 条日志
     if (logs.length > 100) {
@@ -1084,7 +1126,10 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
     }
     await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
 
-    return { success: true };
+    if (errors.length > 0 && results.length === 0) {
+      return { success: false, error: errors.join('; ') };
+    }
+    return { success: true, updated: results.length, failed: errors.length };
   } catch (e) {
     return { success: false, error: e.message };
   }
