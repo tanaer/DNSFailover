@@ -891,14 +891,29 @@ async function isAuthenticated(request, env) {
   if (!match) return false;
   
   const sessionId = match[1];
-  const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
-  const session = sessions[sessionId];
   
+  let sessions = {};
+  try {
+    const data = await env.KV.get(KEYS.AUTH_SESSIONS);
+    if (data) {
+      sessions = JSON.parse(data);
+    }
+  } catch (e) {
+    console.error('isAuthenticated error:', e);
+    return false;
+  }
+  
+  const session = sessions[sessionId];
   if (!session) return false;
+  
   // 会话 24 小时过期
   if (Date.now() - session.created > 24 * 60 * 60 * 1000) {
     delete sessions[sessionId];
-    await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+    try {
+      await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
+    } catch (e) {
+      console.error('Failed to delete expired session:', e);
+    }
     return false;
   }
   return true;
@@ -966,9 +981,26 @@ export default {
 
         // 创建会话
         const sessionId = generateSessionId();
-        const sessions = await getStoredData(env, KEYS.AUTH_SESSIONS);
+        let sessions = {};
+        try {
+          const existingSessions = await env.KV.get(KEYS.AUTH_SESSIONS);
+          if (existingSessions) {
+            sessions = JSON.parse(existingSessions);
+          }
+        } catch (e) {
+          console.error('Failed to get sessions:', e);
+        }
+        
         sessions[sessionId] = { created: Date.now(), ip };
-        await saveStoredData(env, KEYS.AUTH_SESSIONS, sessions);
+        
+        try {
+          await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
+        } catch (e) {
+          console.error('Failed to save session:', e);
+          return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '会话创建失败: ' + e.message), {
+            headers: { 'Content-Type': 'text/html; charset=utf-8' }
+          });
+        }
 
         // 登录成功，返回管理页面并设置 Cookie
         return new Response(getHTML(), {
@@ -996,6 +1028,38 @@ export default {
             'Set-Cookie': 'session=; Path=/; HttpOnly; Max-Age=0'
           }
         });
+      }
+
+      // 调试端点 - 检查会话状态
+      if (path === '/auth/debug' && method === 'GET') {
+        const cookie = request.headers.get('Cookie') || '';
+        const match = cookie.match(/session=([^;]+)/);
+        const sessionId = match ? match[1] : null;
+        
+        let sessions = {};
+        let kvError = null;
+        try {
+          const data = await env.KV.get(KEYS.AUTH_SESSIONS);
+          if (data) {
+            sessions = JSON.parse(data);
+          }
+        } catch (e) {
+          kvError = e.message;
+        }
+        
+        const sessionExists = sessionId ? !!sessions[sessionId] : false;
+        const sessionCount = Object.keys(sessions).length;
+        
+        return Response.json({
+          hasCookie: !!cookie,
+          cookieValue: cookie.substring(0, 50) + '...',
+          hasSessionMatch: !!match,
+          sessionId: sessionId ? sessionId.substring(0, 10) + '...' : null,
+          sessionExists,
+          sessionCount,
+          kvError,
+          authenticated: await isAuthenticated(request, env)
+        }, { headers: corsHeaders });
       }
 
       // 需要认证的路由
@@ -1199,7 +1263,11 @@ async function getStoredData(env, key) {
     return JSON.parse(data);
   } catch (e) {
     console.error('getStoredData error:', e);
-    return key === KEYS.MONITOR_STATUS ? {} : [];
+    // 返回对象的键
+    if (key === KEYS.MONITOR_STATUS || key === KEYS.AUTH_SESSIONS) {
+      return {};
+    }
+    return [];
   }
 }
 
