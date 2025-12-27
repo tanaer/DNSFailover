@@ -1,0 +1,17 @@
+{
+  "name": "dns-failover",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers DNS Failover System",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": ["cloudflare", "workers", "dns", "failover"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

@@ -1,0 +1,12 @@
+name = "dns-failover"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# KV 命名空间绑定 - 部署前需要创建
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# 定时触发器 - 每分钟执行一次健康检查
+[triggers]
+crons = ["* * * * *"]
