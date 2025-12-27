@@ -997,7 +997,8 @@ async function testCloudflareApi(zoneId, token) {
     if (data.success) {
       return { success: true, recordCount: data.result.length };
     } else {
-      return { success: false, error: data.errors?.[0]?.message || 'Unknown error' };
+      const errorMsg = data.errors?.map(e => `${e.code}: ${e.message}`).join('; ') || 'Unknown error';
+      return { success: false, error: errorMsg };
     }
   } catch (e) {
     return { success: false, error: e.message };
