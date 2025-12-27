@@ -965,7 +965,7 @@ export default {
           status: 302,
           headers: {
             'Location': '/',
-            'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
+            'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`
           }
         });
       }
@@ -1179,7 +1179,13 @@ export default {
 async function getStoredData(env, key) {
   try {
     const data = await env.KV.get(key);
-    if (!data) return key === KEYS.MONITOR_STATUS ? {} : [];
+    if (!data) {
+      // 返回对象的键
+      if (key === KEYS.MONITOR_STATUS || key === KEYS.AUTH_SESSIONS) {
+        return {};
+      }
+      return [];
+    }
     return JSON.parse(data);
   } catch (e) {
     console.error('getStoredData error:', e);
