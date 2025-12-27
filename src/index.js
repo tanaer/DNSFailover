@@ -857,17 +857,31 @@ function getHTML() {
 
 // 验证 Turnstile token
 async function verifyTurnstile(token, secretKey, ip) {
-  const formData = new FormData();
+  if (!token) {
+    return { success: false, error: '验证码未完成' };
+  }
+  
+  const formData = new URLSearchParams();
   formData.append('secret', secretKey);
   formData.append('response', token);
-  formData.append('remoteip', ip);
+  if (ip) formData.append('remoteip', ip);
   
-  const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-    method: 'POST',
-    body: formData
-  });
-  const result = await response.json();
-  return result.success;
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString()
+    });
+    const result = await response.json();
+    if (result.success) {
+      return { success: true };
+    } else {
+      const errorCodes = result['error-codes'] || [];
+      return { success: false, error: errorCodes.join(', ') || '验证失败' };
+    }
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 }
 
 // 检查会话是否有效
@@ -935,9 +949,9 @@ export default {
 
         // 验证 Turnstile（如果配置了）
         if (TURNSTILE_SECRET_KEY) {
-          const turnstileValid = await verifyTurnstile(turnstileToken, TURNSTILE_SECRET_KEY, ip);
-          if (!turnstileValid) {
-            return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '人机验证失败，请重试'), {
+          const turnstileResult = await verifyTurnstile(turnstileToken, TURNSTILE_SECRET_KEY, ip);
+          if (!turnstileResult.success) {
+            return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '人机验证失败: ' + turnstileResult.error), {
               headers: { 'Content-Type': 'text/html; charset=utf-8' }
             });
           }
