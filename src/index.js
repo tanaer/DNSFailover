@@ -6,7 +6,8 @@ const KEYS = {
   MONITORS: 'monitors',
   SWITCH_LOGS: 'switch_logs',
   MONITOR_STATUS: 'monitor_status',
-  AUTH_SESSIONS: 'auth_sessions'
+  AUTH_SESSIONS: 'auth_sessions',
+  NOTIFICATION_CHANNELS: 'notification_channels'
 };
 
 // 生成随机会话 ID
@@ -123,6 +124,27 @@ function getHTML() {
     .loading-box { background: #fff; padding: 30px 50px; border-radius: 12px; text-align: center; }
     .loading-spinner { width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #4361ee; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    /* iOS 风格开关 */
+    .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
+    .switch .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    .switch input:checked + .slider { background-color: #4361ee; }
+    .switch input:checked + .slider:before { transform: translateX(20px); }
+    /* 渠道选择器 */
+    .channel-selector { display: flex; gap: 8px; flex-wrap: wrap; }
+    .channel-selector .channel-btn { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 10px; cursor: pointer; transition: all 0.2s; background: #fff; }
+    .channel-selector .channel-btn:hover { border-color: #b0b0b0; background: #fafafa; }
+    .channel-selector .channel-btn.selected { border-color: #4361ee; background: linear-gradient(135deg, #f0f4ff 0%, #e8edff 100%); }
+    .channel-selector .channel-btn input { display: none; }
+    .channel-selector .channel-icon { font-size: 20px; }
+    .channel-selector .channel-info { display: flex; flex-direction: column; }
+    .channel-selector .channel-name { font-weight: 600; color: #333; font-size: 14px; }
+    .channel-selector .channel-desc { font-size: 11px; color: #888; }
+    .channel-selector .channel-btn.selected .channel-name { color: #4361ee; }
+    .channel-selector .channel-check { width: 18px; height: 18px; border: 2px solid #ddd; border-radius: 50%; margin-left: auto; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+    .channel-selector .channel-btn.selected .channel-check { background: #4361ee; border-color: #4361ee; }
+    .channel-selector .channel-btn.selected .channel-check:after { content: '✓'; color: #fff; font-size: 12px; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -144,6 +166,7 @@ function getHTML() {
       <button class="tab active" data-panel="api-config">API 配置</button>
       <button class="tab" data-panel="failover-policy">Failover 策略</button>
       <button class="tab" data-panel="monitors">监控配置</button>
+      <button class="tab" data-panel="notification-channel">通知渠道</button>
       <button class="tab" data-panel="logs">切换日志</button>
       <button class="tab" data-panel="status">监控状态</button>
     </div>
@@ -173,6 +196,15 @@ function getHTML() {
         <button class="btn btn-primary" onclick="showAddMonitorModal()">+ 添加监控</button>
       </div>
       <div id="monitor-list"></div>
+    </div>
+
+    <!-- 通知渠道面板 -->
+    <div id="notification-channel" class="panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3>通知渠道列表</h3>
+        <button class="btn btn-primary" onclick="showAddChannelModal()">+ 添加渠道</button>
+      </div>
+      <div id="channel-list"></div>
     </div>
 
     <!-- 切换日志面板 -->
@@ -281,6 +313,68 @@ function getHTML() {
     </div>
   </div>
 
+  <!-- 通知渠道模态框 -->
+  <div id="channel-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="channel-modal-title">添加通知渠道</h3>
+        <button class="modal-close" onclick="closeModal('channel-modal')">&times;</button>
+      </div>
+      <form id="channel-form">
+        <input type="hidden" id="channel-id">
+        <div class="form-group">
+          <label>渠道名称</label>
+          <input type="text" id="channel-name" required placeholder="例如: 我的微信通知">
+        </div>
+        <div class="form-group">
+          <label>API 域名</label>
+          <input type="url" id="channel-api-url" required value="https://www.pushplus.plus" placeholder="https://www.pushplus.plus">
+          <small style="color:#666">只需填写域名，系统自动使用 /send 接口</small>
+        </div>
+        <div class="form-group">
+          <label>Token</label>
+          <input type="text" id="channel-token" required placeholder="PushPlus 的 token">
+        </div>
+        <div class="form-group">
+          <label style="margin-bottom: 10px;">发送渠道（可多选）</label>
+          <div class="channel-selector" id="channel-types">
+            <label class="channel-btn selected" onclick="toggleChannelBtn(this)">
+              <input type="checkbox" name="channel-type" value="wechat" checked>
+              <span class="channel-icon">📱</span>
+              <div class="channel-info">
+                <span class="channel-name">微信</span>
+                <span class="channel-desc">微信公众号推送</span>
+              </div>
+              <span class="channel-check"></span>
+            </label>
+            <label class="channel-btn" onclick="toggleChannelBtn(this)">
+              <input type="checkbox" name="channel-type" value="app">
+              <span class="channel-icon">📲</span>
+              <div class="channel-info">
+                <span class="channel-name">APP</span>
+                <span class="channel-desc">PushPlus App推送</span>
+              </div>
+              <span class="channel-check"></span>
+            </label>
+            <label class="channel-btn" onclick="toggleChannelBtn(this)">
+              <input type="checkbox" name="channel-type" value="extension">
+              <span class="channel-icon">🌐</span>
+              <div class="channel-info">
+                <span class="channel-name">浏览器扩展</span>
+                <span class="channel-desc">浏览器插件推送</span>
+              </div>
+              <span class="channel-check"></span>
+            </label>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button type="button" class="btn btn-success" onclick="testChannel()">测试通知</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- 监控配置模态框 -->
   <div id="monitor-modal" class="modal">
     <div class="modal-content">
@@ -345,6 +439,7 @@ function getHTML() {
     let apiConfigs = [];
     let policies = [];
     let monitors = [];
+    let channels = [];
     let logs = [];
     let monitorStatus = {};
 
@@ -368,7 +463,7 @@ function getHTML() {
 
     // 加载所有数据
     async function loadAllData() {
-      await Promise.all([loadApiConfigs(), loadPolicies(), loadMonitors(), loadLogs(), loadStatus()]);
+      await Promise.all([loadApiConfigs(), loadPolicies(), loadMonitors(), loadChannels(), loadLogs(), loadStatus()]);
     }
 
     // Toast 提示
@@ -868,6 +963,200 @@ function getHTML() {
       showToast('状态已刷新');
     }
 
+    // ========== 通知渠道 ==========
+    async function loadChannels() {
+      try {
+        const res = await fetch('/api/channels');
+        channels = await res.json();
+        renderChannelList();
+      } catch (e) {
+        console.error('加载通知渠道失败', e);
+      }
+    }
+
+    function renderChannelList() {
+      const container = document.getElementById('channel-list');
+      if (channels.length === 0) {
+        container.innerHTML = '<div class="empty-state">暂无通知渠道，请点击上方按钮添加</div>';
+        return;
+      }
+      const channelTypeMap = { wechat: '微信', app: 'APP', extension: '浏览器扩展' };
+      container.innerHTML = channels.map(c => {
+        const types = Array.isArray(c.channelTypes) ? c.channelTypes : [c.channelType].filter(Boolean);
+        const typesDisplay = types.map(t => channelTypeMap[t] || t).join(', ');
+        return \`
+          <div class="list-item">
+            <div class="list-item-info" style="flex: 1;">
+              <h4>\${c.name}</h4>
+              <p>渠道: \${typesDisplay}</p>
+              <p>API: \${c.apiUrl}</p>
+              <p>Token: \${c.token.substring(0, 8)}...</p>
+            </div>
+            <div class="list-item-actions" style="align-items: center;">
+              <label class="switch" title="\${c.enabled !== false ? '点击禁用' : '点击启用'}">
+                <input type="checkbox" \${c.enabled !== false ? 'checked' : ''} onchange="toggleChannel('\${c.id}', this.checked)">
+                <span class="slider"></span>
+              </label>
+              <button class="btn btn-success btn-sm" onclick="testChannelById('\${c.id}')">测试</button>
+              <button class="btn btn-secondary btn-sm" onclick="editChannel('\${c.id}')">编辑</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteChannel('\${c.id}')">删除</button>
+            </div>
+          </div>
+        \`;
+      }).join('');
+    }
+
+    async function toggleChannel(id, enabled) {
+      const c = channels.find(x => x.id === id);
+      if (!c) return;
+      c.enabled = enabled;
+      try {
+        await fetch('/api/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(c)
+        });
+        showToast(enabled ? '已启用' : '已禁用');
+      } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+        loadChannels();
+      }
+    }
+
+    function showAddChannelModal() {
+      document.getElementById('channel-modal-title').textContent = '添加通知渠道';
+      document.getElementById('channel-form').reset();
+      document.getElementById('channel-id').value = '';
+      document.getElementById('channel-api-url').value = 'https://www.pushplus.plus';
+      // 重置多选框，默认选中微信
+      document.querySelectorAll('#channel-types .channel-btn').forEach(btn => {
+        const cb = btn.querySelector('input');
+        cb.checked = cb.value === 'wechat';
+        btn.classList.toggle('selected', cb.checked);
+      });
+      showModal('channel-modal');
+    }
+
+    function editChannel(id) {
+      const c = channels.find(x => x.id === id);
+      if (!c) return;
+      document.getElementById('channel-modal-title').textContent = '编辑通知渠道';
+      document.getElementById('channel-id').value = c.id;
+      document.getElementById('channel-name').value = c.name;
+      document.getElementById('channel-api-url').value = c.apiUrl;
+      document.getElementById('channel-token').value = c.token;
+      // 设置多选框
+      const types = Array.isArray(c.channelTypes) ? c.channelTypes : [c.channelType].filter(Boolean);
+      document.querySelectorAll('#channel-types .channel-btn').forEach(btn => {
+        const cb = btn.querySelector('input');
+        cb.checked = types.includes(cb.value);
+        btn.classList.toggle('selected', cb.checked);
+      });
+      showModal('channel-modal');
+    }
+
+    function toggleChannelBtn(btn) {
+      const cb = btn.querySelector('input');
+      cb.checked = !cb.checked;
+      btn.classList.toggle('selected', cb.checked);
+    }
+
+    function getSelectedChannelTypes() {
+      return Array.from(document.querySelectorAll('#channel-types input:checked')).map(cb => cb.value);
+    }
+
+    async function testChannel() {
+      const apiUrl = document.getElementById('channel-api-url').value;
+      const token = document.getElementById('channel-token').value;
+      const channelTypes = getSelectedChannelTypes();
+      if (!apiUrl || !token) {
+        showToast('请填写 API 域名和 Token', 'error');
+        return;
+      }
+      if (channelTypes.length === 0) {
+        showToast('请至少选择一个发送渠道', 'error');
+        return;
+      }
+      showLoading('正在发送测试通知...');
+      try {
+        const res = await fetch('/api/channels/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiUrl, token, channelTypes })
+        });
+        const data = await res.json();
+        hideLoading();
+        if (data.success) {
+          showToast('测试通知发送成功！请检查是否收到消息');
+        } else {
+          showToast('发送失败: ' + data.error, 'error');
+        }
+      } catch (e) {
+        hideLoading();
+        showToast('测试失败: ' + e.message, 'error');
+      }
+    }
+
+    async function testChannelById(id) {
+      showLoading('正在发送测试通知...');
+      try {
+        const res = await fetch('/api/channels/' + id + '/test', { method: 'POST' });
+        const data = await res.json();
+        hideLoading();
+        if (data.success) {
+          showToast('测试通知发送成功！请检查是否收到消息');
+        } else {
+          showToast('发送失败: ' + data.error, 'error');
+        }
+      } catch (e) {
+        hideLoading();
+        showToast('测试失败: ' + e.message, 'error');
+      }
+    }
+
+    document.getElementById('channel-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const channelTypes = getSelectedChannelTypes();
+      if (channelTypes.length === 0) {
+        showToast('请至少选择一个发送渠道', 'error');
+        return;
+      }
+      const id = document.getElementById('channel-id').value || crypto.randomUUID();
+      // 编辑时保留原有的 enabled 状态，新建时默认启用
+      const existingChannel = channels.find(c => c.id === id);
+      const data = {
+        id,
+        name: document.getElementById('channel-name').value,
+        apiUrl: document.getElementById('channel-api-url').value,
+        token: document.getElementById('channel-token').value,
+        channelTypes: channelTypes,
+        enabled: existingChannel ? existingChannel.enabled : true
+      };
+      try {
+        await fetch('/api/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        showToast('保存成功');
+        closeModal('channel-modal');
+        loadChannels();
+      } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+      }
+    });
+
+    async function deleteChannel(id) {
+      if (!confirm('确定要删除这个通知渠道吗？')) return;
+      try {
+        await fetch('/api/channels/' + id, { method: 'DELETE' });
+        showToast('删除成功');
+        loadChannels();
+      } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+      }
+    }
+
     async function logout() {
       try {
         await fetch('/auth/logout', { method: 'POST' });
@@ -1219,6 +1508,52 @@ export default {
         return Response.json(result, { headers: corsHeaders });
       }
 
+      // 通知渠道接口
+      if (path === '/api/channels' && method === 'GET') {
+        const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+        return Response.json(channels, { headers: corsHeaders });
+      }
+
+      if (path === '/api/channels' && method === 'POST') {
+        const data = await request.json();
+        const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+        const index = channels.findIndex(c => c.id === data.id);
+        if (index >= 0) {
+          channels[index] = data;
+        } else {
+          channels.push(data);
+        }
+        await saveStoredData(env, KEYS.NOTIFICATION_CHANNELS, channels);
+        return Response.json({ success: true }, { headers: corsHeaders });
+      }
+
+      if (path === '/api/channels/test' && method === 'POST') {
+        const { apiUrl, token, channelTypes } = await request.json();
+        const types = Array.isArray(channelTypes) ? channelTypes : [channelTypes].filter(Boolean);
+        const result = await sendPushPlusNotification(apiUrl, token, types, 'DNS Failover 测试通知', '这是一条测试通知，如果您收到此消息，说明通知配置正确。');
+        return Response.json(result, { headers: corsHeaders });
+      }
+
+      if (path.match(/^\/api\/channels\/[^/]+\/test$/) && method === 'POST') {
+        const id = path.split('/')[3];
+        const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+        const channel = channels.find(c => c.id === id);
+        if (!channel) {
+          return Response.json({ success: false, error: '通知渠道不存在' }, { headers: corsHeaders });
+        }
+        const types = Array.isArray(channel.channelTypes) ? channel.channelTypes : [channel.channelType].filter(Boolean);
+        const result = await sendPushPlusNotification(channel.apiUrl, channel.token, types, 'DNS Failover 测试通知', '这是一条测试通知，如果您收到此消息，说明通知配置正确。');
+        return Response.json(result, { headers: corsHeaders });
+      }
+
+      if (path.match(/^\/api\/channels\/[^/]+$/) && method === 'DELETE') {
+        const id = path.split('/')[3];
+        let channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+        channels = channels.filter(c => c.id !== id);
+        await saveStoredData(env, KEYS.NOTIFICATION_CHANNELS, channels);
+        return Response.json({ success: true }, { headers: corsHeaders });
+      }
+
       // 日志接口
       if (path === '/api/logs' && method === 'GET') {
         const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
@@ -1280,6 +1615,125 @@ async function getStoredData(env, key) {
 
 async function saveStoredData(env, key, data) {
   await env.KV.put(key, JSON.stringify(data));
+}
+
+// 发送 PushPlus 通知（单渠道用 /send，多渠道用 /batchSend）
+async function sendPushPlusNotification(apiBaseUrl, token, channelTypes, title, content) {
+  try {
+    const baseUrl = apiBaseUrl.replace(/\/+$/, ''); // 移除末尾斜杠
+    const types = Array.isArray(channelTypes) ? channelTypes : [channelTypes].filter(Boolean);
+    
+    if (types.length === 0) {
+      return { success: false, error: '未选择发送渠道' };
+    }
+    
+    if (types.length === 1) {
+      // 单渠道使用 /send 接口
+      const apiUrl = baseUrl + '/send';
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: token,
+          title: title,
+          content: content,
+          channel: types[0],
+          template: 'html'
+        })
+      });
+      const data = await response.json();
+      if (data.code === 200) {
+        return { success: true, sent: 1 };
+      } else {
+        return { success: false, error: data.msg || '发送失败' };
+      }
+    } else {
+      // 多渠道需要分别发送
+      const apiUrl = baseUrl + '/send';
+      const errors = [];
+      let successCount = 0;
+      
+      // 为每个渠道类型发送通知
+      for (const channel of types) {
+        try {
+          const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              token: token,
+              title: title,
+              content: content,
+              channel: channel,
+              template: 'html'
+            })
+          });
+          const data = await response.json();
+          if (data.code === 200) {
+            successCount++;
+          } else {
+            errors.push(channel + ': ' + (data.msg || '发送失败'));
+          }
+        } catch (e) {
+          errors.push(channel + ': ' + e.message);
+        }
+      }
+      
+      if (successCount > 0) {
+        return { success: true, sent: successCount, failed: errors.length };
+      } else {
+        return { success: false, error: errors.join('; ') || '发送失败' };
+      }
+    }
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// 发送所有启用的通知渠道
+async function sendAllNotifications(env, title, content) {
+  try {
+    const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+    const enabledChannels = channels.filter(c => c.enabled !== false);
+    
+    const results = [];
+    for (const channel of enabledChannels) {
+      const types = Array.isArray(channel.channelTypes) ? channel.channelTypes : [channel.channelType].filter(Boolean);
+      const result = await sendPushPlusNotification(channel.apiUrl, channel.token, types, title, content);
+      results.push({
+        name: channel.name,
+        success: result.success,
+        error: result.error
+      });
+    }
+    return results;
+  } catch (e) {
+    console.error('sendAllNotifications error:', e);
+    return [];
+  }
+}
+
+// 构建通知内容
+function buildNotificationContent(type, monitorName, policyName, domains, content, reason, successCount, errorCount) {
+  const emoji = type === 'failover' ? '⚠️' : '✅';
+  const typeText = type === 'failover' ? '故障切换' : '恢复切换';
+  const domainsText = Array.isArray(domains) ? domains.join('<br>') : domains;
+  const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  
+  let html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px;">
+      <h2 style="color: ${type === 'failover' ? '#e74c3c' : '#27ae60'}; margin-bottom: 15px;">${emoji} DNS ${typeText}</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr><td style="padding: 8px 0; color: #666;">时间:</td><td style="padding: 8px 0;">${time}</td></tr>
+        ${monitorName ? '<tr><td style="padding: 8px 0; color: #666;">监控:</td><td style="padding: 8px 0;">' + monitorName + '</td></tr>' : ''}
+        <tr><td style="padding: 8px 0; color: #666;">策略:</td><td style="padding: 8px 0;">${policyName}</td></tr>
+        <tr><td style="padding: 8px 0; color: #666; vertical-align: top;">域名:</td><td style="padding: 8px 0;">${domainsText}</td></tr>
+        <tr><td style="padding: 8px 0; color: #666;">目标:</td><td style="padding: 8px 0;">${content}</td></tr>
+        ${reason ? '<tr><td style="padding: 8px 0; color: #666;">原因:</td><td style="padding: 8px 0;">' + reason + '</td></tr>' : ''}
+      </table>
+      ${successCount !== undefined ? '<p style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px;">执行结果: 成功 ' + successCount + ' 个，失败 ' + (errorCount || 0) + ' 个</p>' : ''}
+    </div>
+  `;
+  return html;
 }
 
 // 测试 Cloudflare API
@@ -1405,6 +1859,21 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
       logs.length = 100;
     }
     await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
+
+    // 发送通知
+    try {
+      const notificationTitle = type === 'failover' ? '⚠️ DNS 故障切换通知' : '✅ DNS 恢复切换通知';
+      const notificationContent = buildNotificationContent(
+        type,
+        policy.name,
+        reason,
+        results.length,
+        errors.length
+      );
+      await sendAllNotifications(env, notificationTitle, notificationContent);
+    } catch (notifyError) {
+      console.error('发送通知失败:', notifyError);
+    }
 
     if (errors.length > 0 && results.length === 0) {
       return { success: false, error: errors.join('; ') };
