@@ -240,6 +240,11 @@ function getHTML() {
           <input type="text" id="api-name" required placeholder="例如: 主站点API">
         </div>
         <div class="form-group">
+          <label>根域名</label>
+          <input type="text" id="api-domain" required placeholder="例如: example.com">
+          <small style="color:#666">该配置对应的根域名，用于自动匹配 Failover 策略中的域名</small>
+        </div>
+        <div class="form-group">
           <label>区域 ID (Zone ID)</label>
           <input type="text" id="api-zone-id" required placeholder="32位字符">
         </div>
@@ -270,7 +275,8 @@ function getHTML() {
         </div>
         <div class="form-group">
           <label>域名列表（每行一个域名）</label>
-          <textarea id="policy-domains" required rows="4" placeholder="www.example.com&#10;api.example.com&#10;cdn.example.com"></textarea>
+          <textarea id="policy-domains" required rows="4" placeholder="www.example.com&#10;api.example.com&#10;cdn.example.com" oninput="validatePolicyDomains()"></textarea>
+          <div id="policy-domains-validation" style="margin-top: 8px; font-size: 13px;"></div>
         </div>
         <div class="form-group">
           <label>记录类型</label>
@@ -284,10 +290,7 @@ function getHTML() {
           <label>目标内容</label>
           <input type="text" id="policy-content" required placeholder="IP地址或域名">
         </div>
-        <div class="form-group">
-          <label>使用的 API 配置</label>
-          <select id="policy-api-id" required></select>
-        </div>
+        <input type="hidden" id="policy-api-id">
         <div class="form-group">
           <label>TTL</label>
           <select id="policy-ttl">
@@ -501,10 +504,12 @@ function getHTML() {
         <div class="list-item">
           <div class="list-item-info">
             <h4>\${api.name}</h4>
+            <p>域名: \${api.domain || '未设置'}</p>
             <p>Zone ID: \${api.zoneId.substring(0, 8)}...</p>
           </div>
           <div class="list-item-actions">
             <button class="btn btn-success btn-sm" onclick="testApiById('\${api.id}')">测试</button>
+            <button class="btn btn-secondary btn-sm" onclick="copyApi('\${api.id}')">复制</button>
             <button class="btn btn-secondary btn-sm" onclick="editApi('\${api.id}')">编辑</button>
             <button class="btn btn-danger btn-sm" onclick="deleteApi('\${api.id}')">删除</button>
           </div>
@@ -519,12 +524,25 @@ function getHTML() {
       showModal('api-modal');
     }
 
+    function copyApi(id) {
+      const api = apiConfigs.find(a => a.id === id);
+      if (!api) return;
+      document.getElementById('api-modal-title').textContent = '复制 API 配置';
+      document.getElementById('api-id').value = ''; // 新ID，会在保存时自动生成
+      document.getElementById('api-name').value = api.name + ' (复制)';
+      document.getElementById('api-domain').value = ''; // 域名需要用户填写
+      document.getElementById('api-zone-id').value = ''; // Zone ID 需要用户填写
+      document.getElementById('api-token').value = api.token; // Token 复用
+      showModal('api-modal');
+    }
+
     function editApi(id) {
       const api = apiConfigs.find(a => a.id === id);
       if (!api) return;
       document.getElementById('api-modal-title').textContent = '编辑 API 配置';
       document.getElementById('api-id').value = api.id;
       document.getElementById('api-name').value = api.name;
+      document.getElementById('api-domain').value = api.domain || '';
       document.getElementById('api-zone-id').value = api.zoneId;
       document.getElementById('api-token').value = api.token;
       showModal('api-modal');
@@ -574,6 +592,7 @@ function getHTML() {
       const data = {
         id,
         name: document.getElementById('api-name').value,
+        domain: document.getElementById('api-domain').value.toLowerCase().trim(),
         zoneId: document.getElementById('api-zone-id').value,
         token: document.getElementById('api-token').value
       };
@@ -646,11 +665,58 @@ function getHTML() {
       }).join('');
     }
 
+    // 获取域名的根域名
+    function getRootDomain(domain) {
+      // 移除通配符前缀
+      domain = domain.replace(/^\\*\\./, '');
+      const parts = domain.split('.');
+      if (parts.length >= 2) {
+        return parts.slice(-2).join('.');
+      }
+      return domain;
+    }
+
+    // 查找域名对应的 API 配置
+    function findApiConfigForDomain(domain) {
+      const rootDomain = getRootDomain(domain);
+      return apiConfigs.find(api => api.domain && api.domain.toLowerCase() === rootDomain.toLowerCase());
+    }
+
+    // 验证策略域名
+    function validatePolicyDomains() {
+      const domainsText = document.getElementById('policy-domains').value;
+      const domains = domainsText.split('\\n').map(d => d.trim()).filter(d => d);
+      const validationDiv = document.getElementById('policy-domains-validation');
+      
+      if (domains.length === 0) {
+        validationDiv.innerHTML = '';
+        return;
+      }
+      
+      let html = '';
+      let allValid = true;
+      
+      for (const domain of domains) {
+        const api = findApiConfigForDomain(domain);
+        const rootDomain = getRootDomain(domain);
+        if (api) {
+          html += '<div style="color: #27ae60; margin: 2px 0;">✅ ' + domain + ' → ' + api.name + '</div>';
+        } else {
+          html += '<div style="color: #e74c3c; margin: 2px 0;">❌ ' + domain + ' → 未找到 "' + rootDomain + '" 的 API 配置，请先添加</div>';
+          allValid = false;
+        }
+      }
+      
+      validationDiv.innerHTML = html;
+      return allValid;
+    }
+
     function showAddPolicyModal() {
       document.getElementById('policy-modal-title').textContent = '添加 Failover 策略';
       document.getElementById('policy-form').reset();
       document.getElementById('policy-id').value = '';
       document.getElementById('policy-ttl').value = '1';
+      document.getElementById('policy-domains-validation').innerHTML = '';
       showModal('policy-modal');
     }
 
@@ -664,9 +730,10 @@ function getHTML() {
       document.getElementById('policy-domains').value = domains.join('\\n');
       document.getElementById('policy-record-type').value = p.recordType;
       document.getElementById('policy-content').value = p.content;
-      document.getElementById('policy-api-id').value = p.apiId;
+      document.getElementById('policy-api-id').value = p.apiId || '';
       document.getElementById('policy-ttl').value = p.ttl || 1;
       document.getElementById('policy-proxied').value = String(p.proxied !== false);
+      validatePolicyDomains();
       showModal('policy-modal');
     }
 
@@ -675,13 +742,20 @@ function getHTML() {
       const id = document.getElementById('policy-id').value || crypto.randomUUID();
       const domainsText = document.getElementById('policy-domains').value;
       const domains = domainsText.split('\\n').map(d => d.trim()).filter(d => d);
+      
+      // 验证所有域名都有对应的 API 配置
+      const invalidDomains = domains.filter(d => !findApiConfigForDomain(d));
+      if (invalidDomains.length > 0) {
+        showToast('部分域名未配置 API，请先添加对应的 API 配置', 'error');
+        return;
+      }
+      
       const data = {
         id,
         name: document.getElementById('policy-name').value,
         domains: domains,
         recordType: document.getElementById('policy-record-type').value,
         content: document.getElementById('policy-content').value,
-        apiId: document.getElementById('policy-api-id').value,
         ttl: parseInt(document.getElementById('policy-ttl').value) || 1,
         proxied: document.getElementById('policy-proxied').value === 'true'
       };
@@ -1457,12 +1531,8 @@ export default {
         if (!policy) {
           return Response.json({ success: false, error: '策略不存在' }, { headers: corsHeaders });
         }
-        const configs = await getStoredData(env, KEYS.API_CONFIGS);
-        const apiConfig = configs.find(c => c.id === policy.apiId);
-        if (!apiConfig) {
-          return Response.json({ success: false, error: 'API配置不存在' }, { headers: corsHeaders });
-        }
-        const result = await executeFailoverPolicy(env, policy, apiConfig, '手动执行');
+        // apiConfig 传 null，executeFailoverPolicy 会自动根据域名查找
+        const result = await executeFailoverPolicy(env, policy, null, '手动执行');
         return Response.json(result, { headers: corsHeaders });
       }
 
@@ -1760,6 +1830,23 @@ async function testCloudflareApi(zoneId, token) {
   }
 }
 
+// 获取域名的根域名
+function getRootDomain(domain) {
+  // 移除通配符前缀
+  domain = domain.replace(/^\*\./, '');
+  const parts = domain.split('.');
+  if (parts.length >= 2) {
+    return parts.slice(-2).join('.');
+  }
+  return domain;
+}
+
+// 根据域名查找对应的 API 配置
+function findApiConfigForDomain(configs, domain) {
+  const rootDomain = getRootDomain(domain);
+  return configs.find(api => api.domain && api.domain.toLowerCase() === rootDomain.toLowerCase());
+}
+
 // 执行 Failover 策略
 async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName = null, type = 'failover') {
   try {
@@ -1767,15 +1854,31 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
     const domains = Array.isArray(policy.domains) ? policy.domains : [policy.domain].filter(Boolean);
     const results = [];
     const errors = [];
+    
+    // 获取所有 API 配置
+    const allApiConfigs = await getStoredData(env, KEYS.API_CONFIGS);
 
     for (const domain of domains) {
       try {
+        // 自动查找该域名对应的 API 配置
+        let currentApiConfig = findApiConfigForDomain(allApiConfigs, domain);
+        
+        // 如果找不到，回退到传入的 apiConfig（兼容旧版）
+        if (!currentApiConfig && apiConfig) {
+          currentApiConfig = apiConfig;
+        }
+        
+        if (!currentApiConfig) {
+          errors.push(`${domain}: 未找到对应的 API 配置`);
+          continue;
+        }
+        
         // 获取 DNS 记录 ID
         const listResponse = await fetch(
-          `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records?name=${domain}&type=${policy.recordType}`,
+          `https://api.cloudflare.com/client/v4/zones/${currentApiConfig.zoneId}/dns_records?name=${domain}&type=${policy.recordType}`,
           {
             headers: {
-              'Authorization': `Bearer ${apiConfig.token}`,
+              'Authorization': `Bearer ${currentApiConfig.token}`,
               'Content-Type': 'application/json'
             }
           }
@@ -1788,11 +1891,11 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
         if (!listData.success || listData.result.length === 0) {
           // 记录不存在，创建新记录
           const createResponse = await fetch(
-            `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records`,
+            `https://api.cloudflare.com/client/v4/zones/${currentApiConfig.zoneId}/dns_records`,
             {
               method: 'POST',
               headers: {
-                'Authorization': `Bearer ${apiConfig.token}`,
+                'Authorization': `Bearer ${currentApiConfig.token}`,
                 'Content-Type': 'application/json'
               },
               body: JSON.stringify({
@@ -1814,11 +1917,11 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
           // 更新现有记录
           const recordId = listData.result[0].id;
           const updateResponse = await fetch(
-            `https://api.cloudflare.com/client/v4/zones/${apiConfig.zoneId}/dns_records/${recordId}`,
+            `https://api.cloudflare.com/client/v4/zones/${currentApiConfig.zoneId}/dns_records/${recordId}`,
             {
               method: 'PATCH',
               headers: {
-                'Authorization': `Bearer ${apiConfig.token}`,
+                'Authorization': `Bearer ${currentApiConfig.token}`,
                 'Content-Type': 'application/json'
               },
               body: JSON.stringify({
