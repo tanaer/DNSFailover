@@ -848,11 +848,15 @@ function getHTML() {
         return \`
           <div class="list-item">
             <div class="list-item-info">
-              <h4>\${m.name} \${m.enabled ? '' : '<span class="status status-warning">已禁用</span>'} \${statusHtml}</h4>
+              <h4>\${m.name} \${statusHtml}</h4>
               <p>URL: \${m.url}</p>
               <p>间隔: \${m.interval}秒 | 失败阈值: \${m.failureThreshold}次 | 触发策略: \${policy ? policy.name : '未知'}</p>
             </div>
-            <div class="list-item-actions">
+            <div class="list-item-actions" style="align-items: center;">
+              <label class="switch" title="\${m.enabled !== false ? '点击禁用监控' : '点击启用监控'}">
+                <input type="checkbox" \${m.enabled !== false ? 'checked' : ''} onchange="toggleMonitor('\${m.id}', this.checked)">
+                <span class="slider"></span>
+              </label>
               <button class="btn btn-success btn-sm" onclick="testMonitor('\${m.id}')">测试</button>
               <button class="btn btn-secondary btn-sm" onclick="editMonitor('\${m.id}')">编辑</button>
               <button class="btn btn-danger btn-sm" onclick="deleteMonitor('\${m.id}')">删除</button>
@@ -930,6 +934,23 @@ function getHTML() {
         loadMonitors();
       } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
+      }
+    }
+
+    async function toggleMonitor(id, enabled) {
+      const m = monitors.find(x => x.id === id);
+      if (!m) return;
+      m.enabled = enabled;
+      try {
+        await fetch('/api/monitors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(m)
+        });
+        showToast(enabled ? '监控已启用' : '监控已禁用');
+      } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+        loadMonitors();
       }
     }
 
@@ -2074,19 +2095,21 @@ async function runHealthChecks(env) {
     };
     
     // 检查是否需要触发 Failover
-    const wasHealthy = lastStatus.healthy !== false;
-    const isNowUnhealthy = !result.healthy && newStatus.failureCount >= monitor.failureThreshold;
+    // 条件：达到失败阈值 且 还没有触发过切换
+    const shouldTriggerFailover = !result.healthy && 
+      newStatus.failureCount >= monitor.failureThreshold && 
+      !lastStatus.failoverTriggered;
     
-    if (wasHealthy && isNowUnhealthy) {
+    if (shouldTriggerFailover) {
       // 触发 Failover
       const policy = policies.find(p => p.id === monitor.policyId);
-      const apiConfig = configs.find(c => c.id === policy?.apiId);
       
-      if (policy && apiConfig) {
+      if (policy) {
+        // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
         await executeFailoverPolicy(
           env, 
           policy, 
-          apiConfig, 
+          null, 
           `连续失败 ${newStatus.failureCount} 次: ${result.error}`,
           monitor.name,
           'failover'
@@ -2103,13 +2126,13 @@ async function runHealthChecks(env) {
     if (wasUnhealthy && isNowHealthy && monitor.recoveryPolicyId) {
       // 触发恢复策略
       const recoveryPolicy = policies.find(p => p.id === monitor.recoveryPolicyId);
-      const apiConfig = configs.find(c => c.id === recoveryPolicy?.apiId);
       
-      if (recoveryPolicy && apiConfig) {
+      if (recoveryPolicy) {
+        // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
         await executeFailoverPolicy(
           env,
           recoveryPolicy,
-          apiConfig,
+          null,
           '服务恢复正常',
           monitor.name,
           'recovery'
