@@ -466,7 +466,84 @@ function getHTML() {
 
     // 加载所有数据
     async function loadAllData() {
-      await Promise.all([loadApiConfigs(), loadPolicies(), loadMonitors(), loadChannels(), loadLogs(), loadStatus()]);
+      // 先并行加载所有数据
+      await Promise.all([
+        fetchApiConfigs(),
+        fetchPolicies(),
+        fetchMonitors(),
+        fetchChannels(),
+        fetchLogs(),
+        fetchStatus()
+      ]);
+      // 然后统一渲染，确保数据已加载完成
+      renderAll();
+    }
+
+    // 统一渲染所有列表
+    function renderAll() {
+      renderApiList();
+      updateApiSelects();
+      renderPolicyList();
+      updatePolicySelects();
+      renderMonitorList();
+      renderChannelList();
+      renderLogList();
+      renderStatusList();
+    }
+
+    // 获取数据（不渲染）
+    async function fetchApiConfigs() {
+      try {
+        const res = await fetch('/api/configs');
+        apiConfigs = await res.json();
+      } catch (e) {
+        console.error('加载API配置失败', e);
+      }
+    }
+
+    async function fetchPolicies() {
+      try {
+        const res = await fetch('/api/policies');
+        policies = await res.json();
+      } catch (e) {
+        console.error('加载策略失败', e);
+      }
+    }
+
+    async function fetchMonitors() {
+      try {
+        const res = await fetch('/api/monitors');
+        monitors = await res.json();
+      } catch (e) {
+        console.error('加载监控配置失败', e);
+      }
+    }
+
+    async function fetchChannels() {
+      try {
+        const res = await fetch('/api/channels');
+        channels = await res.json();
+      } catch (e) {
+        console.error('加载通知渠道失败', e);
+      }
+    }
+
+    async function fetchLogs() {
+      try {
+        const res = await fetch('/api/logs');
+        logs = await res.json();
+      } catch (e) {
+        console.error('加载日志失败', e);
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        monitorStatus = await res.json();
+      } catch (e) {
+        console.error('加载状态失败', e);
+      }
     }
 
     // Toast 提示
@@ -484,14 +561,9 @@ function getHTML() {
 
     // ========== API 配置 ==========
     async function loadApiConfigs() {
-      try {
-        const res = await fetch('/api/configs');
-        apiConfigs = await res.json();
-        renderApiList();
-        updateApiSelects();
-      } catch (e) {
-        console.error('加载API配置失败', e);
-      }
+      await fetchApiConfigs();
+      renderApiList();
+      updateApiSelects();
     }
 
     function renderApiList() {
@@ -628,14 +700,9 @@ function getHTML() {
 
     // ========== Failover 策略 ==========
     async function loadPolicies() {
-      try {
-        const res = await fetch('/api/policies');
-        policies = await res.json();
-        renderPolicyList();
-        updatePolicySelects();
-      } catch (e) {
-        console.error('加载策略失败', e);
-      }
+      await fetchPolicies();
+      renderPolicyList();
+      updatePolicySelects();
     }
 
     function renderPolicyList() {
@@ -821,13 +888,8 @@ function getHTML() {
 
     // ========== 监控配置 ==========
     async function loadMonitors() {
-      try {
-        const res = await fetch('/api/monitors');
-        monitors = await res.json();
-        renderMonitorList();
-      } catch (e) {
-        console.error('加载监控配置失败', e);
-      }
+      await fetchMonitors();
+      renderMonitorList();
     }
 
     function renderMonitorList() {
@@ -970,13 +1032,8 @@ function getHTML() {
 
     // ========== 日志 ==========
     async function loadLogs() {
-      try {
-        const res = await fetch('/api/logs');
-        logs = await res.json();
-        renderLogList();
-      } catch (e) {
-        console.error('加载日志失败', e);
-      }
+      await fetchLogs();
+      renderLogList();
     }
 
     function renderLogList() {
@@ -1019,14 +1076,9 @@ function getHTML() {
 
     // ========== 状态 ==========
     async function loadStatus() {
-      try {
-        const res = await fetch('/api/status');
-        monitorStatus = await res.json();
-        renderStatusList();
-        renderMonitorList();
-      } catch (e) {
-        console.error('加载状态失败', e);
-      }
+      await fetchStatus();
+      renderStatusList();
+      renderMonitorList();  // 状态更新后也刷新监控列表显示
     }
 
     function renderStatusList() {
@@ -1040,6 +1092,22 @@ function getHTML() {
         const monitor = monitors.find(m => m.id === id);
         const statusClass = status.healthy ? 'status-success' : 'status-error';
         const statusText = status.healthy ? '正常' : '异常';
+        
+        // 构建详细信息
+        let detailsHtml = '';
+        if (status.lastDetails) {
+          const d = status.lastDetails;
+          const detailParts = [];
+          if (d.errorType) detailParts.push('错误类型: ' + d.errorType);
+          if (d.cfRay) detailParts.push('CF-Ray: ' + d.cfRay);
+          if (d.cfCacheStatus) detailParts.push('缓存: ' + d.cfCacheStatus);
+          if (d.server) detailParts.push('服务器: ' + d.server);
+          if (d.checkTime) detailParts.push('检查时间: ' + new Date(d.checkTime).toLocaleString());
+          if (detailParts.length > 0) {
+            detailsHtml = '<p style="color:#666;font-size:12px;margin-top:5px;background:#f5f5f5;padding:8px;border-radius:4px;">' + detailParts.join(' | ') + '</p>';
+          }
+        }
+        
         return \`
           <div class="list-item">
             <div class="list-item-info">
@@ -1047,6 +1115,7 @@ function getHTML() {
               <p>连续失败次数: \${status.failureCount} | 最后检查: \${status.lastCheck ? new Date(status.lastCheck).toLocaleString() : '从未'}</p>
               <p>最后状态码: \${status.lastStatusCode || '-'} | 最后耗时: \${status.lastResponseTime || '-'}ms</p>
               \${status.lastError ? '<p style="color:#e74c3c">错误: ' + status.lastError + '</p>' : ''}
+              \${detailsHtml}
             </div>
           </div>
         \`;
@@ -1060,13 +1129,8 @@ function getHTML() {
 
     // ========== 通知渠道 ==========
     async function loadChannels() {
-      try {
-        const res = await fetch('/api/channels');
-        channels = await res.json();
-        renderChannelList();
-      } catch (e) {
-        console.error('加载通知渠道失败', e);
-      }
+      await fetchChannels();
+      renderChannelList();
     }
 
     function renderChannelList() {
@@ -1316,8 +1380,8 @@ async function isAuthenticated(request, env) {
   const session = sessions[sessionId];
   if (!session) return false;
   
-  // 会话 24 小时过期
-  if (Date.now() - session.created > 24 * 60 * 60 * 1000) {
+  // 会话 48 小时过期
+  if (Date.now() - session.created > 48 * 60 * 60 * 1000) {
     delete sessions[sessionId];
     try {
       await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
@@ -1412,12 +1476,12 @@ export default {
           });
         }
 
-        // 登录成功，返回管理页面并设置 Cookie
-        return new Response(getHTML(), {
-          status: 200,
+        // 登录成功，重定向到首页并设置 Cookie（48小时有效）
+        return new Response(null, {
+          status: 302,
           headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`
+            'Location': '/',
+            'Set-Cookie': `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=172800`
           }
         });
       }
@@ -2011,20 +2075,38 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
 // 健康检查
 async function checkHealth(monitor) {
   const startTime = Date.now();
+  const checkTime = new Date().toISOString();
+  
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), (monitor.timeout || 10) * 1000);
+    const timeoutMs = (monitor.timeout || 10) * 1000;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    // 记录请求开始
+    const requestInfo = {
+      url: monitor.url,
+      timeout: timeoutMs,
+      checkTime: checkTime
+    };
     
     const response = await fetch(monitor.url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'DNS-Failover-Monitor/1.0'
+        'User-Agent': 'Mozilla/5.0 (compatible; DNS-Failover-Monitor/1.0; +https://cloudflare.com)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cache-Control': 'no-cache'
       }
     });
     clearTimeout(timeoutId);
     
     const responseTime = Date.now() - startTime;
     const statusCode = response.status;
+    
+    // 获取响应头信息用于诊断
+    const cfRay = response.headers.get('cf-ray') || '';
+    const cfCacheStatus = response.headers.get('cf-cache-status') || '';
+    const server = response.headers.get('server') || '';
     
     // 检查状态码
     const expectedStatuses = monitor.expectedStatus.split(',').map(s => parseInt(s.trim()));
@@ -2033,7 +2115,8 @@ async function checkHealth(monitor) {
         healthy: false,
         statusCode,
         responseTime,
-        error: `状态码不匹配: 期望 ${monitor.expectedStatus}, 实际 ${statusCode}`
+        error: `状态码不匹配: 期望 ${monitor.expectedStatus}, 实际 ${statusCode}`,
+        details: { cfRay, cfCacheStatus, server, checkTime }
       };
     }
     
@@ -2046,17 +2129,58 @@ async function checkHealth(monitor) {
           healthy: false,
           statusCode,
           responseTime,
-          error: '响应内容不匹配'
+          error: '响应内容不匹配',
+          details: { cfRay, cfCacheStatus, server, checkTime, bodyLength: body.length }
         };
       }
     }
     
-    return { healthy: true, statusCode, responseTime };
+    return { 
+      healthy: true, 
+      statusCode, 
+      responseTime,
+      details: { cfRay, cfCacheStatus, server, checkTime }
+    };
   } catch (e) {
+    const responseTime = Date.now() - startTime;
+    
+    // 详细的错误信息
+    let errorDetail = '';
+    let errorType = 'unknown';
+    
+    if (e.name === 'AbortError') {
+      errorType = 'timeout';
+      errorDetail = `请求超时 (${responseTime}ms > ${(monitor.timeout || 10) * 1000}ms)`;
+    } else if (e.message.includes('fetch failed')) {
+      errorType = 'network';
+      errorDetail = `网络错误: ${e.message}`;
+    } else if (e.message.includes('SSL') || e.message.includes('TLS') || e.message.includes('certificate')) {
+      errorType = 'ssl';
+      errorDetail = `SSL/TLS错误: ${e.message}`;
+    } else if (e.message.includes('DNS') || e.message.includes('ENOTFOUND') || e.message.includes('getaddrinfo')) {
+      errorType = 'dns';
+      errorDetail = `DNS解析失败: ${e.message}`;
+    } else if (e.message.includes('ECONNREFUSED')) {
+      errorType = 'connection_refused';
+      errorDetail = `连接被拒绝: ${e.message}`;
+    } else if (e.message.includes('ECONNRESET') || e.message.includes('socket hang up')) {
+      errorType = 'connection_reset';
+      errorDetail = `连接被重置: ${e.message}`;
+    } else {
+      errorDetail = `${e.name}: ${e.message}`;
+    }
+    
     return {
       healthy: false,
-      responseTime: Date.now() - startTime,
-      error: e.name === 'AbortError' ? '请求超时' : e.message
+      responseTime,
+      error: errorDetail,
+      details: {
+        errorType,
+        errorName: e.name,
+        errorMessage: e.message,
+        checkTime,
+        url: monitor.url
+      }
     };
   }
 }
@@ -2091,14 +2215,17 @@ async function runHealthChecks(env) {
       lastCheck: now,
       lastStatusCode: result.statusCode,
       lastResponseTime: result.responseTime,
-      lastError: result.error
+      lastError: result.error,
+      lastDetails: result.details || null,
+      // 继承之前的切换状态，防止重复触发
+      failoverTriggered: lastStatus.failoverTriggered || false
     };
     
     // 检查是否需要触发 Failover
     // 条件：达到失败阈值 且 还没有触发过切换
     const shouldTriggerFailover = !result.healthy && 
       newStatus.failureCount >= monitor.failureThreshold && 
-      !lastStatus.failoverTriggered;
+      !newStatus.failoverTriggered;  // 使用 newStatus 而不是 lastStatus
     
     if (shouldTriggerFailover) {
       // 触发 Failover
@@ -2123,21 +2250,25 @@ async function runHealthChecks(env) {
     const wasUnhealthy = lastStatus.healthy === false && lastStatus.failoverTriggered;
     const isNowHealthy = result.healthy;
     
-    if (wasUnhealthy && isNowHealthy && monitor.recoveryPolicyId) {
-      // 触发恢复策略
-      const recoveryPolicy = policies.find(p => p.id === monitor.recoveryPolicyId);
+    if (wasUnhealthy && isNowHealthy) {
+      // 服务恢复正常，重置切换状态
+      newStatus.failoverTriggered = false;
       
-      if (recoveryPolicy) {
-        // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
-        await executeFailoverPolicy(
-          env,
-          recoveryPolicy,
-          null,
-          '服务恢复正常',
-          monitor.name,
-          'recovery'
-        );
-        newStatus.failoverTriggered = false;
+      // 如果配置了恢复策略，则触发
+      if (monitor.recoveryPolicyId) {
+        const recoveryPolicy = policies.find(p => p.id === monitor.recoveryPolicyId);
+        
+        if (recoveryPolicy) {
+          // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
+          await executeFailoverPolicy(
+            env,
+            recoveryPolicy,
+            null,
+            '服务恢复正常',
+            monitor.name,
+            'recovery'
+          );
+        }
       }
     }
     
