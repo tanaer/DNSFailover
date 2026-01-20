@@ -22,11 +22,12 @@
 
 [![Deploy to Cloudflare Workers](https://camo.githubusercontent.com/aa3de9a0130879a84691a2286f5302105d5f3554c5d0af4e3f2f24174eeeea25/68747470733a2f2f6465706c6f792e776f726b6572732e636c6f7564666c6172652e636f6d2f627574746f6e)](https://deploy.workers.cloudflare.com/?url=https://github.com/tanaer/DNSFailover)
 
-部署完成后：
-1. 在 Cloudflare Dashboard 中找到创建的 Worker
-2. 进入 **设置 → 变量** 配置 KV 命名空间绑定（变量名：`KV`）
-3. （可选）配置环境变量：`ADMIN_PASSWORD`、`TURNSTILE_SITE_KEY`、`TURNSTILE_SECRET_KEY`
-4. 访问 Worker URL 开始使用
+**一键部署会自动：**
+- 创建 KV 命名空间并绑定
+- 提示输入环境变量（管理员密码、Turnstile 密钥等）
+- 配置定时任务（每分钟执行健康检查）
+
+部署完成后直接访问 Worker URL 即可使用！
 
 ### 方式二：手动部署
 
@@ -124,7 +125,7 @@ npm run deploy
 2. 点击 **添加渠道**
 3. 填写：
    - 渠道名称
-   - API 域名 默认：https://www.pushplus.plus
+   - API 域名（默认：[PushPlus](https://www.pushplus.plus)）
    - Token
    - 选择发送渠道（微信/APP/浏览器扩展，可多选）
 4. 点击 **测试通知** 验证配置
