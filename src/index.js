@@ -131,6 +131,21 @@ function getHTML() {
     .switch .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
     .switch input:checked + .slider { background-color: #4361ee; }
     .switch input:checked + .slider:before { transform: translateX(20px); }
+    .switch input:focus + .slider { box-shadow: 0 0 1px #4361ee; }
+    
+    /* 开关容器 */
+    .switch-container { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .switch-label { font-weight: 500; color: #333; margin: 0; }
+    
+    /* Webhook 测试样式 */
+    .webhook-test-section { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+    .webhook-result { font-size: 13px; padding: 4px 8px; border-radius: 4px; }
+    .webhook-result.success { background-color: #d1fae5; color: #065f46; }
+    .webhook-result.error { background-color: #fee2e2; color: #991b1b; }
+    .webhook-result.loading { background-color: #dbeafe; color: #1e40af; }
+    
+    /* 表单提示文字 */
+    .form-hint { font-size: 12px; color: #666; margin-top: 4px; }
     /* 渠道选择器 */
     .channel-selector { display: flex; gap: 8px; flex-wrap: wrap; }
     .channel-selector .channel-btn { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 10px; cursor: pointer; transition: all 0.2s; background: #fff; }
@@ -311,6 +326,25 @@ function getHTML() {
             <option value="false">仅 DNS</option>
           </select>
         </div>
+        <div class="form-group">
+          <label>Webhook 通知地址 (可选)</label>
+          <input type="url" id="policy-webhook-url" placeholder="https://your-webhook-url.com">
+          <div class="form-hint">当执行此策略时会向此地址发送POST请求。支持查询参数，例: http://example.com?token=xxx</div>
+        </div>
+        <div class="form-group">
+          <label>Webhook 请求头 (可选，JSON格式)</label>
+          <input type="text" id="policy-webhook-headers" placeholder='{"Authorization":"Bearer xxx","User-Agent":"DNS-Failover"}'>
+          <div class="form-hint">自定义 HTTP 请求头，以 JSON 对象格式输入</div>
+        </div>
+        <div class="form-group">
+          <label>Webhook 预期响应内容 (可选，支持正则)</label>
+          <input type="text" id="policy-webhook-expected-body" placeholder="例如: success 或 {\"code\":200}">
+          <div class="form-hint">若不匹配将重试3次，失败后会发送 PushPlus 通知</div>
+          <div class="webhook-test-section">
+            <button type="button" class="btn btn-secondary btn-sm" id="test-policy-webhook-btn" onclick="testPolicyWebhook()">测试 Webhook</button>
+            <span id="policy-webhook-test-result" class="webhook-result"></span>
+          </div>
+        </div>
         <button type="submit" class="btn btn-primary">保存</button>
       </form>
     </div>
@@ -428,8 +462,12 @@ function getHTML() {
           </select>
         </div>
         <div class="form-group">
-          <label>
-            <input type="checkbox" id="monitor-enabled" checked> 启用监控
+          <label class="switch-container">
+            <span class="switch-label">启用监控</span>
+            <label class="switch" title="开启或关闭此监控">
+              <input type="checkbox" id="monitor-enabled" checked>
+              <span class="slider"></span>
+            </label>
           </label>
         </div>
         <button type="submit" class="btn btn-primary">保存</button>
@@ -784,6 +822,9 @@ function getHTML() {
       document.getElementById('policy-id').value = '';
       document.getElementById('policy-ttl').value = '1';
       document.getElementById('policy-domains-validation').innerHTML = '';
+      document.getElementById('policy-webhook-url').value = '';
+      document.getElementById('policy-webhook-headers').value = '';
+      document.getElementById('policy-webhook-expected-body').value = '';
       showModal('policy-modal');
     }
 
@@ -800,6 +841,9 @@ function getHTML() {
       document.getElementById('policy-api-id').value = p.apiId || '';
       document.getElementById('policy-ttl').value = p.ttl || 1;
       document.getElementById('policy-proxied').value = String(p.proxied !== false);
+      document.getElementById('policy-webhook-url').value = p.webhookUrl || '';
+      document.getElementById('policy-webhook-headers').value = p.webhookHeaders || '';
+      document.getElementById('policy-webhook-expected-body').value = p.webhookExpectedBody || '';
       validatePolicyDomains();
       showModal('policy-modal');
     }
@@ -824,7 +868,10 @@ function getHTML() {
         recordType: document.getElementById('policy-record-type').value,
         content: document.getElementById('policy-content').value,
         ttl: parseInt(document.getElementById('policy-ttl').value) || 1,
-        proxied: document.getElementById('policy-proxied').value === 'true'
+        proxied: document.getElementById('policy-proxied').value === 'true',
+        webhookUrl: document.getElementById('policy-webhook-url').value.trim(),
+        webhookHeaders: document.getElementById('policy-webhook-headers').value.trim(),
+        webhookExpectedBody: document.getElementById('policy-webhook-expected-body').value.trim()
       };
       try {
         await fetch('/api/policies', {
@@ -996,6 +1043,72 @@ function getHTML() {
         loadMonitors();
       } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
+      }
+    }
+
+    // 策略 Webhook 测试功能 (通过后端代理避免跨域)
+    async function testPolicyWebhook() {
+      const webhookUrl = document.getElementById('policy-webhook-url').value.trim();
+      const webhookHeaders = document.getElementById('policy-webhook-headers').value.trim();
+      const expectedBody = document.getElementById('policy-webhook-expected-body').value.trim();
+      const testBtn = document.getElementById('test-policy-webhook-btn');
+      const resultSpan = document.getElementById('policy-webhook-test-result');
+      
+      if (!webhookUrl) {
+        resultSpan.textContent = '请输入 Webhook URL';
+        resultSpan.className = 'webhook-result error';
+        return;
+      }
+      
+      // 验证 JSON 请求头
+      let headers = {};
+      if (webhookHeaders) {
+        try {
+          headers = JSON.parse(webhookHeaders);
+        } catch (e) {
+          resultSpan.textContent = '❌ 请求头格式错误: ' + e.message;
+          resultSpan.className = 'webhook-result error';
+          return;
+        }
+      }
+      
+      try {
+        testBtn.disabled = true;
+        testBtn.textContent = '测试中...';
+        resultSpan.textContent = '正在通过后端测试...';
+        resultSpan.className = 'webhook-result loading';
+        
+        const res = await fetch('/api/policies/test-webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: webhookUrl,
+            customHeaders: headers,
+            expectedBody: expectedBody,
+            data: {
+              event: 'policy_test',
+              timestamp: new Date().toISOString(),
+              message: '这是一条测试消息',
+              policyName: document.getElementById('policy-name').value || '测试策略'
+            }
+          })
+        });
+        
+        const data = await res.json();
+        if (data.success) {
+          resultSpan.textContent = '✅ 测试成功! ' + (data.match ? '内容匹配' : '内容不匹配但请求成功');
+          if (data.response) resultSpan.textContent += ' 响应: ' + data.response.substring(0, 50);
+          resultSpan.className = 'webhook-result success';
+        } else {
+          resultSpan.textContent = '❌ 测试失败: ' + data.error + (data.response ? ' 响应: ' + data.response.substring(0, 50) : '');
+          resultSpan.className = 'webhook-result error';
+        }
+      } catch (e) {
+        resultSpan.textContent = '❌ 网络错误: ' + e.message;
+        resultSpan.className = 'webhook-result error';
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = '测试 Webhook';
       }
     }
 
@@ -1601,6 +1714,52 @@ export default {
         return Response.json({ success: true }, { headers: corsHeaders });
       }
 
+      // Webhook 后端测试接口
+      if (path === '/api/policies/test-webhook' && method === 'POST') {
+        try {
+          const { url, customHeaders, expectedBody, data } = await request.json();
+          
+          // 构建请求头
+          const headers = { 
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+          };
+          if (customHeaders && typeof customHeaders === 'object') {
+            Object.assign(headers, customHeaders);
+          }
+          
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(data),
+            signal: AbortSignal.timeout(10000)
+          });
+          
+          const responseText = await response.text();
+          let match = true;
+          if (expectedBody) {
+            try {
+              const regex = new RegExp(expectedBody);
+              match = regex.test(responseText);
+            } catch (e) {
+              match = responseText.includes(expectedBody);
+            }
+          }
+          
+          return Response.json({
+            success: response.ok,
+            status: response.status,
+            match,
+            response: responseText.substring(0, 200),
+            error: response.ok ? null : 'HTTP ' + response.status
+          }, { headers: corsHeaders });
+        } catch (e) {
+          return Response.json({ success: false, error: e.message }, { headers: corsHeaders });
+        }
+      }
+
       if (path.match(/^\/api\/policies\/[^/]+$/) && method === 'DELETE') {
         const id = path.split('/')[3];
         let policies = await getStoredData(env, KEYS.FAILOVER_POLICIES);
@@ -2063,12 +2222,117 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
       console.error('发送通知失败:', notifyError);
     }
 
+    // 触发策略绑定的 Webhook
+    if (policy.webhookUrl) {
+      // 在后台运行，不阻塞主流程
+      const details = {
+        type: type,
+        reason: reason,
+        monitorName: monitorName,
+        successCount: results.length,
+        errorCount: errors.length,
+        domains: domains,
+        content: policy.content
+      };
+      env.ctx.waitUntil(sendWebhookNotification(policy, type, details, env));
+    }
+
     if (errors.length > 0 && results.length === 0) {
       return { success: false, error: errors.join('; ') };
     }
     return { success: true, updated: results.length, failed: errors.length };
   } catch (e) {
     return { success: false, error: e.message };
+  }
+}
+
+// 发送 Webhook 通知 (带重试和 PushPlus 降级通知)
+async function sendWebhookNotification(policy, eventType, details, env) {
+  if (!policy || !policy.webhookUrl) return;
+
+  const maxRetries = 3;
+  let lastError = null;
+  let success = false;
+
+  const payload = {
+    event: eventType,
+    policyName: policy.name,
+    timestamp: new Date().toISOString(),
+    details: details
+  };
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      // 构建请求头
+      const headers = { 
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      };
+      if (policy.webhookHeaders) {
+        try {
+          const customHeaders = JSON.parse(policy.webhookHeaders);
+          Object.assign(headers, customHeaders);
+        } catch (e) {
+          console.error('Webhook 请求头解析失败:', e);
+        }
+      }
+      
+      const response = await fetch(policy.webhookUrl, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000)
+      });
+
+      const responseText = await response.text();
+      
+      if (response.ok) {
+        if (policy.webhookExpectedBody) {
+          let match = false;
+          try {
+            const regex = new RegExp(policy.webhookExpectedBody);
+            match = regex.test(responseText);
+          } catch (e) {
+            match = responseText.includes(policy.webhookExpectedBody);
+          }
+          
+          if (match) {
+            success = true;
+            break;
+          } else {
+            lastError = '响应内容不匹配。预期: ' + policy.webhookExpectedBody + ', 实际: ' + responseText.substring(0, 100);
+          }
+        } else {
+          success = true;
+          break;
+        }
+      } else {
+        lastError = 'HTTP ' + response.status + ': ' + responseText.substring(0, 100);
+      }
+    } catch (e) {
+      lastError = e.message;
+    }
+    
+    // 如果失败，等待重试
+    if (i < maxRetries - 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
+    }
+  }
+
+  // 全部失败则发送 PushPlus 通告
+  if (!success) {
+    const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
+    if (channels.length > 0) {
+      const errorMsg = 'Webhook 投递失败 (' + maxRetries + '次尝试): ' + lastError;
+      const title = '⚠️ Webhook 异常告警: ' + (policy.name || '未知策略');
+      const content = '策略名称: ' + (policy.name || '-') + '<br>目标 URL: ' + policy.webhookUrl + '<br>错误详情: ' + errorMsg + '<br>事件类型: ' + eventType;
+      
+      for (const channel of channels) {
+        const types = Array.isArray(channel.types) ? channel.types : (channel.type ? [channel.type] : ['wechat']);
+        await sendPushPlusNotification(channel.apiUrl, channel.token, types, title, content);
+      }
+    }
   }
 }
 
@@ -2193,6 +2457,7 @@ async function runHealthChecks(env) {
   let status = await getStoredData(env, KEYS.MONITOR_STATUS);
   
   const now = Date.now();
+  let hasStatusChanged = false;
   
   for (const monitor of monitors) {
     if (!monitor.enabled) continue;
@@ -2272,8 +2537,15 @@ async function runHealthChecks(env) {
       }
     }
     
-    status[monitor.id] = newStatus;
+    // 检查状态是否真正发生变化
+    if (JSON.stringify(lastStatus) !== JSON.stringify(newStatus)) {
+      status[monitor.id] = newStatus;
+      hasStatusChanged = true;
+    }
   }
   
-  await saveStoredData(env, KEYS.MONITOR_STATUS, status);
+  // 只有状态发生变化时才写入 KV
+  if (hasStatusChanged) {
+    await saveStoredData(env, KEYS.MONITOR_STATUS, status);
+  }
 }
