@@ -1776,7 +1776,7 @@ export default {
           return Response.json({ success: false, error: '策略不存在' }, { headers: corsHeaders });
         }
         // apiConfig 传 null，executeFailoverPolicy 会自动根据域名查找
-        const result = await executeFailoverPolicy(env, policy, null, '手动执行');
+        const result = await executeFailoverPolicy(env, policy, null, '手动执行', null, 'failover', ctx);
         return Response.json(result, { headers: corsHeaders });
       }
 
@@ -1887,7 +1887,7 @@ export default {
 
       // 手动触发检查
       if (path === '/api/check' && method === 'POST') {
-        await runHealthChecks(env);
+        await runHealthChecks(env, ctx);
         return Response.json({ success: true }, { headers: corsHeaders });
       }
 
@@ -1900,7 +1900,7 @@ export default {
 
   // 定时任务处理
   async scheduled(event, env, ctx) {
-    await runHealthChecks(env);
+    await runHealthChecks(env, ctx);
   }
 };
 
@@ -2092,7 +2092,7 @@ function findApiConfigForDomain(configs, domain) {
 }
 
 // 执行 Failover 策略
-async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName = null, type = 'failover') {
+async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName = null, type = 'failover', ctx = null) {
   try {
     // 支持多域名，兼容旧版单域名格式
     const domains = Array.isArray(policy.domains) ? policy.domains : [policy.domain].filter(Boolean);
@@ -2224,6 +2224,7 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
 
     // 触发策略绑定的 Webhook
     if (policy.webhookUrl) {
+      console.log('[Webhook] 准备发送 Webhook 通知, URL:', policy.webhookUrl, 'ctx存在:', !!ctx);
       // 在后台运行，不阻塞主流程
       const details = {
         type: type,
@@ -2234,7 +2235,15 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
         domains: domains,
         content: policy.content
       };
-      env.ctx.waitUntil(sendWebhookNotification(policy, type, details, env));
+      if (ctx) {
+        console.log('[Webhook] 使用 ctx.waitUntil 发送');
+        ctx.waitUntil(sendWebhookNotification(policy, type, details, env));
+      } else {
+        console.log('[Webhook] 无 ctx，直接同步发送');
+        sendWebhookNotification(policy, type, details, env);
+      }
+    } else {
+      console.log('[Webhook] 策略未配置 webhookUrl，跳过');
     }
 
     if (errors.length > 0 && results.length === 0) {
@@ -2248,7 +2257,11 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
 
 // 发送 Webhook 通知 (带重试和 PushPlus 降级通知)
 async function sendWebhookNotification(policy, eventType, details, env) {
-  if (!policy || !policy.webhookUrl) return;
+  console.log('[Webhook] sendWebhookNotification 开始执行, policy:', policy?.name, 'webhookUrl:', policy?.webhookUrl);
+  if (!policy || !policy.webhookUrl) {
+    console.log('[Webhook] 策略或 webhookUrl 为空，退出');
+    return;
+  }
 
   const maxRetries = 3;
   let lastError = null;
@@ -2260,8 +2273,10 @@ async function sendWebhookNotification(policy, eventType, details, env) {
     timestamp: new Date().toISOString(),
     details: details
   };
+  console.log('[Webhook] 准备发送 payload:', JSON.stringify(payload));
 
   for (let i = 0; i < maxRetries; i++) {
+    console.log('[Webhook] 第', i + 1, '次尝试发送...');
     try {
       // 构建请求头
       const headers = { 
@@ -2273,11 +2288,13 @@ async function sendWebhookNotification(policy, eventType, details, env) {
         try {
           const customHeaders = JSON.parse(policy.webhookHeaders);
           Object.assign(headers, customHeaders);
+          console.log('[Webhook] 自定义请求头已合并');
         } catch (e) {
-          console.error('Webhook 请求头解析失败:', e);
+          console.error('[Webhook] 请求头解析失败:', e);
         }
       }
       
+      console.log('[Webhook] 发送请求到:', policy.webhookUrl);
       const response = await fetch(policy.webhookUrl, {
         method: 'POST',
         headers: headers,
@@ -2286,6 +2303,7 @@ async function sendWebhookNotification(policy, eventType, details, env) {
       });
 
       const responseText = await response.text();
+      console.log('[Webhook] 响应状态:', response.status, '响应内容:', responseText.substring(0, 200));
       
       if (response.ok) {
         if (policy.webhookExpectedBody) {
@@ -2298,30 +2316,37 @@ async function sendWebhookNotification(policy, eventType, details, env) {
           }
           
           if (match) {
+            console.log('[Webhook] 发送成功，响应内容匹配');
             success = true;
             break;
           } else {
             lastError = '响应内容不匹配。预期: ' + policy.webhookExpectedBody + ', 实际: ' + responseText.substring(0, 100);
+            console.log('[Webhook] 响应内容不匹配');
           }
         } else {
+          console.log('[Webhook] 发送成功');
           success = true;
           break;
         }
       } else {
         lastError = 'HTTP ' + response.status + ': ' + responseText.substring(0, 100);
+        console.log('[Webhook] HTTP 错误:', lastError);
       }
     } catch (e) {
       lastError = e.message;
+      console.error('[Webhook] 请求异常:', e);
     }
     
     // 如果失败，等待重试
     if (i < maxRetries - 1) {
+      console.log('[Webhook] 等待重试...');
       await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
     }
   }
 
   // 全部失败则发送 PushPlus 通告
   if (!success) {
+    console.log('[Webhook] 所有重试失败，准备发送 PushPlus 通告');
     const channels = await getStoredData(env, KEYS.NOTIFICATION_CHANNELS);
     if (channels.length > 0) {
       const errorMsg = 'Webhook 投递失败 (' + maxRetries + '次尝试): ' + lastError;
@@ -2334,6 +2359,7 @@ async function sendWebhookNotification(policy, eventType, details, env) {
       }
     }
   }
+  console.log('[Webhook] sendWebhookNotification 执行完成, 成功:', success);
 }
 
 // 健康检查
@@ -2450,7 +2476,7 @@ async function checkHealth(monitor) {
 }
 
 // 执行所有健康检查
-async function runHealthChecks(env) {
+async function runHealthChecks(env, ctx = null) {
   const monitors = await getStoredData(env, KEYS.MONITORS);
   const policies = await getStoredData(env, KEYS.FAILOVER_POLICIES);
   const configs = await getStoredData(env, KEYS.API_CONFIGS);
@@ -2504,7 +2530,8 @@ async function runHealthChecks(env) {
           null, 
           `连续失败 ${newStatus.failureCount} 次: ${result.error}`,
           monitor.name,
-          'failover'
+          'failover',
+          ctx
         );
         newStatus.healthy = false;
         newStatus.failoverTriggered = true;
@@ -2531,7 +2558,8 @@ async function runHealthChecks(env) {
             null,
             '服务恢复正常',
             monitor.name,
-            'recovery'
+            'recovery',
+            ctx
           );
         }
       }
