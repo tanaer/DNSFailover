@@ -235,7 +235,10 @@ function getHTML() {
     <div id="status" class="panel">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3>实时监控状态</h3>
-        <button class="btn btn-secondary" onclick="refreshStatus()">刷新状态</button>
+        <div>
+          <button class="btn btn-primary" onclick="forceCheck()" style="margin-right: 10px;">手动触发检查</button>
+          <button class="btn btn-secondary" onclick="refreshStatus()">刷新状态</button>
+        </div>
       </div>
       <div id="status-list"></div>
     </div>
@@ -1238,6 +1241,28 @@ function getHTML() {
     function refreshStatus() {
       loadStatus();
       showToast('状态已刷新');
+    }
+
+    // 强制触发健康检查
+    async function forceCheck() {
+      if (!confirm('确定要在后台强制执行一次所有配置的健康检查吗？')) return;
+      try {
+        showLoading('正在执行全面健康检查，这可能需要几秒钟...');
+        const response = await fetch('/api/check', { method: 'POST' });
+        const result = await response.json();
+        
+        hideLoading();
+        if (result.success) {
+          showToast('健康检查执行完成', 'success');
+          loadStatus(); // 刷新状态列表
+          loadLogs();   // 刷新日志列表
+        } else {
+          showToast('执行失败: ' + (result.error || '未知错误'), 'error');
+        }
+      } catch (error) {
+        hideLoading();
+        showToast('请求失败: ' + error.message, 'error');
+      }
     }
 
     // ========== 通知渠道 ==========
@@ -2477,103 +2502,160 @@ async function checkHealth(monitor) {
 
 // 执行所有健康检查
 async function runHealthChecks(env, ctx = null) {
-  const monitors = await getStoredData(env, KEYS.MONITORS);
-  const policies = await getStoredData(env, KEYS.FAILOVER_POLICIES);
-  const configs = await getStoredData(env, KEYS.API_CONFIGS);
-  let status = await getStoredData(env, KEYS.MONITOR_STATUS);
-  
-  const now = Date.now();
-  let hasStatusChanged = false;
-  
-  for (const monitor of monitors) {
-    if (!monitor.enabled) continue;
+  console.log('[HealthCheck] 开始执行健康检查');
+  try {
+    const monitors = await getStoredData(env, KEYS.MONITORS);
+    const policies = await getStoredData(env, KEYS.FAILOVER_POLICIES);
+    const configs = await getStoredData(env, KEYS.API_CONFIGS);
+    let status = await getStoredData(env, KEYS.MONITOR_STATUS);
     
-    // 检查是否到达检查时间
-    const lastStatus = status[monitor.id] || { failureCount: 0, healthy: true };
-    const lastCheck = lastStatus.lastCheck || 0;
+    const now = Date.now();
+    let hasStatusChanged = false;
     
-    if (now - lastCheck < monitor.interval * 1000) {
-      continue; // 还没到检查时间
-    }
-    
-    // 执行健康检查
-    const result = await checkHealth(monitor);
-    
-    // 更新状态
-    const newStatus = {
-      healthy: result.healthy,
-      failureCount: result.healthy ? 0 : (lastStatus.failureCount || 0) + 1,
-      lastCheck: now,
-      lastStatusCode: result.statusCode,
-      lastResponseTime: result.responseTime,
-      lastError: result.error,
-      lastDetails: result.details || null,
-      // 继承之前的切换状态，防止重复触发
-      failoverTriggered: lastStatus.failoverTriggered || false
-    };
-    
-    // 检查是否需要触发 Failover
-    // 条件：达到失败阈值 且 还没有触发过切换
-    const shouldTriggerFailover = !result.healthy && 
-      newStatus.failureCount >= monitor.failureThreshold && 
-      !newStatus.failoverTriggered;  // 使用 newStatus 而不是 lastStatus
-    
-    if (shouldTriggerFailover) {
-      // 触发 Failover
-      const policy = policies.find(p => p.id === monitor.policyId);
+    for (const monitor of monitors) {
+      if (!monitor.enabled) continue;
       
-      if (policy) {
-        // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
-        await executeFailoverPolicy(
-          env, 
-          policy, 
-          null, 
-          `连续失败 ${newStatus.failureCount} 次: ${result.error}`,
-          monitor.name,
-          'failover',
-          ctx
-        );
-        newStatus.healthy = false;
-        newStatus.failoverTriggered = true;
-      }
-    }
-    
-    // 检查是否恢复
-    const wasUnhealthy = lastStatus.healthy === false && lastStatus.failoverTriggered;
-    const isNowHealthy = result.healthy;
-    
-    if (wasUnhealthy && isNowHealthy) {
-      // 服务恢复正常，重置切换状态
-      newStatus.failoverTriggered = false;
-      
-      // 如果配置了恢复策略，则触发
-      if (monitor.recoveryPolicyId) {
-        const recoveryPolicy = policies.find(p => p.id === monitor.recoveryPolicyId);
+      try {
+        // 检查是否到达检查时间
+        const lastStatus = status[monitor.id] || { failureCount: 0, healthy: true };
+        const lastCheck = lastStatus.lastCheck || 0;
         
-        if (recoveryPolicy) {
-          // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
-          await executeFailoverPolicy(
-            env,
-            recoveryPolicy,
-            null,
-            '服务恢复正常',
-            monitor.name,
-            'recovery',
-            ctx
-          );
+        if (now - lastCheck < monitor.interval * 1000) {
+          continue; // 还没到检查时间
         }
+        
+        console.log(`[HealthCheck] 检查监控项: ${monitor.name} (${monitor.url})`);
+
+        // 执行健康检查
+        const result = await checkHealth(monitor);
+        console.log(`[HealthCheck] ${monitor.name} 检查结果: healthy=${result.healthy}, statusCode=${result.statusCode}, error=${result.error}`);
+        
+        // 更新状态
+        const newStatus = {
+          healthy: result.healthy,
+          failureCount: result.healthy ? 0 : (lastStatus.failureCount || 0) + 1,
+          lastCheck: now,
+          lastStatusCode: result.statusCode,
+          lastResponseTime: result.responseTime,
+          lastError: result.error,
+          lastDetails: result.details || null,
+          // 继承之前的切换状态，防止重复触发
+          failoverTriggered: lastStatus.failoverTriggered || false
+        };
+        
+        console.log(`[HealthCheck] ${monitor.name} 状态更新: failureCount=${newStatus.failureCount}, threshold=${monitor.failureThreshold}, failoverTriggered=${newStatus.failoverTriggered}`);
+
+        // 检查是否需要触发 Failover
+        // 条件：达到失败阈值 且 还没有触发过切换
+        const shouldTriggerFailover = !result.healthy && 
+          newStatus.failureCount >= monitor.failureThreshold && 
+          !newStatus.failoverTriggered;  // 使用 newStatus 而不是 lastStatus
+        
+        if (shouldTriggerFailover) {
+          console.log(`[HealthCheck] ${monitor.name} 触发故障切换!`);
+          // 触发 Failover
+          const policy = policies.find(p => p.id === monitor.policyId);
+          
+          if (policy) {
+            console.log(`[HealthCheck] ${monitor.name} 找到策略: ${policy.name}, 开始执行切换...`);
+            // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
+            await executeFailoverPolicy(
+              env, 
+              policy, 
+              null, 
+              `连续失败 ${newStatus.failureCount} 次: ${result.error}`,
+              monitor.name,
+              'failover',
+              ctx
+            );
+            newStatus.healthy = false;
+            newStatus.failoverTriggered = true;
+            console.log(`[HealthCheck] ${monitor.name} 切换执行完成`);
+          } else {
+            console.error(`[HealthCheck] ${monitor.name} 未找到策略ID: ${monitor.policyId}`);
+            // 记录错误到日志，但不中断流程
+            const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
+            logs.unshift({
+              time: new Date().toISOString(),
+              type: 'error',
+              monitorName: monitor.name,
+              reason: `触发切换但未找到策略 (ID: ${monitor.policyId})`,
+              errorCount: 1
+            });
+            if (logs.length > 100) logs.length = 100;
+            await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
+          }
+        } else if (!result.healthy && newStatus.failoverTriggered) {
+             console.log(`[HealthCheck] ${monitor.name} 依然不健康，但已触发过切换，跳过。`);
+        } else if (!result.healthy) {
+             console.log(`[HealthCheck] ${monitor.name} 不健康，但未达到阈值 (${newStatus.failureCount}/${monitor.failureThreshold})`);
+        }
+        
+        // 检查是否恢复
+        const wasUnhealthy = lastStatus.healthy === false && lastStatus.failoverTriggered;
+        const isNowHealthy = result.healthy;
+        
+        if (wasUnhealthy && isNowHealthy) {
+          console.log(`[HealthCheck] ${monitor.name} 服务恢复正常!`);
+          // 服务恢复正常，重置切换状态
+          newStatus.failoverTriggered = false;
+          
+          // 如果配置了恢复策略，则触发
+          if (monitor.recoveryPolicyId) {
+            const recoveryPolicy = policies.find(p => p.id === monitor.recoveryPolicyId);
+            
+            if (recoveryPolicy) {
+              console.log(`[HealthCheck] ${monitor.name} 执行恢复策略: ${recoveryPolicy.name}`);
+              // apiConfig 传 null，executeFailoverPolicy 会根据域名自动查找对应的 API 配置
+              await executeFailoverPolicy(
+                env,
+                recoveryPolicy,
+                null,
+                '服务恢复正常',
+                monitor.name,
+                'recovery',
+                ctx
+              );
+            } else {
+               console.warn(`[HealthCheck] ${monitor.name} 未找到恢复策略ID: ${monitor.recoveryPolicyId}`);
+            }
+          }
+        }
+        
+        // 检查状态是否真正发生变化
+        if (JSON.stringify(lastStatus) !== JSON.stringify(newStatus)) {
+          status[monitor.id] = newStatus;
+          hasStatusChanged = true;
+        }
+      } catch (monitorError) {
+        console.error(`[HealthCheck] 处理监控项 ${monitor.name} 时发生错误:`, monitorError);
+        // 尝试记录错误状态，避免卡死
+        // 但不要抛出，继续处理下一个监控项
       }
     }
     
-    // 检查状态是否真正发生变化
-    if (JSON.stringify(lastStatus) !== JSON.stringify(newStatus)) {
-      status[monitor.id] = newStatus;
-      hasStatusChanged = true;
+    // 只有状态发生变化时才写入 KV
+    if (hasStatusChanged) {
+      console.log('[HealthCheck] 状态发生变化，更新 KV');
+      await saveStoredData(env, KEYS.MONITOR_STATUS, status);
+    } else {
+      console.log('[HealthCheck] 状态无变化');
     }
-  }
-  
-  // 只有状态发生变化时才写入 KV
-  if (hasStatusChanged) {
-    await saveStoredData(env, KEYS.MONITOR_STATUS, status);
+  } catch (e) {
+    console.error('[HealthCheck] 严重错误:', e);
+    // 尝试记录到 KV 日志
+    try {
+        const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
+        logs.unshift({
+            time: new Date().toISOString(),
+            type: 'system_error',
+            reason: `健康检查运行崩溃: ${e.message}`,
+            errorCount: 1
+        });
+        if (logs.length > 100) logs.length = 100;
+        await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
+    } catch (logError) {
+        console.error('[HealthCheck] 无法记录崩溃日志:', logError);
+    }
   }
 }
