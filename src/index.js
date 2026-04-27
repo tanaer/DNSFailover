@@ -10,11 +10,134 @@ const KEYS = {
   NOTIFICATION_CHANNELS: 'notification_channels'
 };
 
+const SESSION_TTL_SECONDS = 48 * 60 * 60;
+const AUTH_SESSION_PREFIX = `${KEYS.AUTH_SESSIONS}:`;
+const HEALTH_CHECK_STEP_MS = 15 * 1000;
+const STATUS_PERSIST_INTERVAL_MS = 15 * 60 * 1000;
+
+// 内存缓存，用于批量写入日志（减少 KV 写入次数）
+const logBuffer = {
+  logs: [],
+  lastFlush: Date.now(),
+  // 批量写入间隔（毫秒）- 5分钟
+  flushInterval: 5 * 60 * 1000,
+  // 最大缓存条数
+  maxBufferSize: 50
+};
+
+// 批量写入日志到 KV
+async function flushLogsToKV(env) {
+  if (logBuffer.logs.length === 0) return;
+  
+  try {
+    const existingLogs = await getStoredData(env, KEYS.SWITCH_LOGS);
+    // 合并新日志到前面
+    const allLogs = [...logBuffer.logs, ...existingLogs];
+    // 只保留最近 100 条
+    if (allLogs.length > 100) {
+      allLogs.length = 100;
+    }
+    await saveStoredData(env, KEYS.SWITCH_LOGS, allLogs);
+    // 清空缓存
+    logBuffer.logs = [];
+    logBuffer.lastFlush = Date.now();
+  } catch (e) {
+    console.error('Flush logs error:', e);
+  }
+}
+
+// 添加日志到缓存
+async function addLogToBuffer(env, logEntry) {
+  logBuffer.logs.unshift(logEntry);
+  
+  // 检查是否需要立即刷新
+  const now = Date.now();
+  const shouldFlush = 
+    logBuffer.logs.length >= logBuffer.maxBufferSize || 
+    (now - logBuffer.lastFlush) >= logBuffer.flushInterval;
+  
+  if (shouldFlush) {
+    await flushLogsToKV(env);
+  }
+}
+
 // 生成随机会话 ID
 function generateSessionId() {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
   return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function parseSessionIdFromCookie(cookie = '') {
+  const match = cookie.match(/session=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+function buildAuthSessionKey(sessionId) {
+  return `${AUTH_SESSION_PREFIX}${sessionId}`;
+}
+
+async function getAuthSession(env, sessionId) {
+  if (!sessionId) return null;
+  const data = await env.KV.get(buildAuthSessionKey(sessionId));
+  return data ? JSON.parse(data) : null;
+}
+
+async function saveAuthSession(env, sessionId, session) {
+  await env.KV.put(buildAuthSessionKey(sessionId), JSON.stringify(session), {
+    expirationTtl: SESSION_TTL_SECONDS
+  });
+}
+
+async function deleteAuthSession(env, sessionId) {
+  if (!sessionId) return;
+  await env.KV.delete(buildAuthSessionKey(sessionId));
+}
+
+async function clearAuthSessions(env) {
+  let cursor;
+  const sessionKeys = [];
+
+  do {
+    const page = await env.KV.list({
+      prefix: AUTH_SESSION_PREFIX,
+      cursor
+    });
+    sessionKeys.push(...page.keys.map(key => key.name));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+
+  for (const key of sessionKeys) {
+    await env.KV.delete(key);
+  }
+
+  // 兼容旧版的聚合会话存储
+  await env.KV.delete(KEYS.AUTH_SESSIONS);
+}
+
+function shouldRunMonitorCheck(monitor, now, force = false) {
+  if (force) return true;
+
+  const intervalSeconds = Number(monitor.interval) || 60;
+  const intervalMs = Math.max(intervalSeconds * 1000, HEALTH_CHECK_STEP_MS);
+  return Math.floor(now / intervalMs) !== Math.floor((now - HEALTH_CHECK_STEP_MS) / intervalMs);
+}
+
+function hasMeaningfulMonitorStatusChange(lastStatus = {}, newStatus = {}) {
+  return (lastStatus.healthy ?? true) !== newStatus.healthy ||
+    (lastStatus.failureCount || 0) !== (newStatus.failureCount || 0) ||
+    Boolean(lastStatus.failoverTriggered) !== Boolean(newStatus.failoverTriggered) ||
+    (lastStatus.lastError || null) !== (newStatus.lastError || null);
+}
+
+function shouldPersistMonitorStatus(lastStatus = {}, newStatus = {}, force = false) {
+  if (force) return true;
+  if (hasMeaningfulMonitorStatusChange(lastStatus, newStatus)) {
+    return true;
+  }
+
+  const lastPersistedCheck = lastStatus.lastCheck || 0;
+  return (newStatus.lastCheck - lastPersistedCheck) >= STATUS_PERSIST_INTERVAL_MS;
 }
 
 // 获取登录页面
@@ -1498,48 +1621,38 @@ async function verifyTurnstile(token, secretKey, ip) {
 
 // 检查会话是否有效
 async function isAuthenticated(request, env) {
-  const cookie = request.headers.get('Cookie') || '';
-  const match = cookie.match(/session=([^;]+)/);
-  if (!match) return false;
-  
-  const sessionId = match[1];
-  
-  let sessions = {};
+  const sessionId = parseSessionIdFromCookie(request.headers.get('Cookie') || '');
+  if (!sessionId) return false;
+
   try {
-    const data = await env.KV.get(KEYS.AUTH_SESSIONS);
-    if (data) {
-      sessions = JSON.parse(data);
+    const session = await getAuthSession(env, sessionId);
+    if (!session) return false;
+
+    if (Date.now() - session.created > SESSION_TTL_SECONDS * 1000) {
+      try {
+        await deleteAuthSession(env, sessionId);
+      } catch (e) {
+        console.error('Failed to delete expired session:', e);
+      }
+      return false;
     }
+
+    return true;
   } catch (e) {
     console.error('isAuthenticated error:', e);
     return false;
   }
-  
-  const session = sessions[sessionId];
-  if (!session) return false;
-  
-  // 会话 48 小时过期
-  if (Date.now() - session.created > 48 * 60 * 60 * 1000) {
-    delete sessions[sessionId];
-    try {
-      await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
-    } catch (e) {
-      console.error('Failed to delete expired session:', e);
-    }
-    return false;
-  }
-  return true;
 }
 
 // 主请求处理
-export default {
+const worker = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
     // 获取配置
-    const AUTH_PASSWORD = env.AUTH_PASSWORD || 'admin123';
+    const AUTH_PASSWORD = env.ADMIN_PASSWORD || env.AUTH_PASSWORD || 'admin123';
     const TURNSTILE_SITE_KEY = env.TURNSTILE_SITE_KEY || '';
     const TURNSTILE_SECRET_KEY = env.TURNSTILE_SECRET_KEY || '';
 
@@ -1593,20 +1706,8 @@ export default {
 
         // 创建会话
         const sessionId = generateSessionId();
-        let sessions = {};
         try {
-          const existingSessions = await env.KV.get(KEYS.AUTH_SESSIONS);
-          if (existingSessions) {
-            sessions = JSON.parse(existingSessions);
-          }
-        } catch (e) {
-          console.error('Failed to get sessions:', e);
-        }
-        
-        sessions[sessionId] = { created: Date.now(), ip };
-        
-        try {
-          await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
+          await saveAuthSession(env, sessionId, { created: Date.now(), ip });
         } catch (e) {
           console.error('Failed to save session:', e);
           return new Response(getLoginHTML(TURNSTILE_SITE_KEY, '会话创建失败: ' + e.message), {
@@ -1626,16 +1727,10 @@ export default {
 
       // 登出处理
       if (path === '/auth/logout' && method === 'POST') {
-        const cookie = request.headers.get('Cookie') || '';
-        const match = cookie.match(/session=([^;]+)/);
-        if (match) {
+        const sessionId = parseSessionIdFromCookie(request.headers.get('Cookie') || '');
+        if (sessionId) {
           try {
-            const data = await env.KV.get(KEYS.AUTH_SESSIONS);
-            if (data) {
-              const sessions = JSON.parse(data);
-              delete sessions[match[1]];
-              await env.KV.put(KEYS.AUTH_SESSIONS, JSON.stringify(sessions));
-            }
+            await deleteAuthSession(env, sessionId);
           } catch (e) {
             console.error('Logout error:', e);
           }
@@ -1651,7 +1746,7 @@ export default {
 
       // 清理并重置会话存储（管理用）
       if (path === '/auth/reset' && method === 'POST') {
-        await env.KV.delete(KEYS.AUTH_SESSIONS);
+        await clearAuthSessions(env);
         return Response.json({ success: true, message: 'Sessions cleared' }, { headers: corsHeaders });
       }
 
@@ -1895,11 +1990,15 @@ export default {
 
       // 日志接口
       if (path === '/api/logs' && method === 'GET') {
+        // 先刷新缓存，然后返回合并后的日志
+        await flushLogsToKV(env);
         const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
         return Response.json(logs, { headers: corsHeaders });
       }
 
       if (path === '/api/logs' && method === 'DELETE') {
+        // 清空缓存和 KV
+        logBuffer.logs = [];
         await saveStoredData(env, KEYS.SWITCH_LOGS, []);
         return Response.json({ success: true }, { headers: corsHeaders });
       }
@@ -1912,7 +2011,11 @@ export default {
 
       // 手动触发检查
       if (path === '/api/check' && method === 'POST') {
-        await runHealthChecks(env, ctx);
+        await runHealthChecks(env, ctx, {
+          force: true,
+          flushLogs: true,
+          forcePersistStatus: true
+        });
         return Response.json({ success: true }, { headers: corsHeaders });
       }
 
@@ -1923,9 +2026,35 @@ export default {
     }
   },
 
-  // 定时任务处理
+  // 定时任务处理 - 每15秒检查一次（1分钟内执行4次）
   async scheduled(event, env, ctx) {
-    await runHealthChecks(env, ctx);
+    const runChecks = async () => {
+      await runHealthChecks(env, ctx, { flushLogs: false });
+    };
+    
+    // 立即执行第一次
+    await runChecks();
+    
+    // 使用 ctx.waitUntil 在后台执行后续检查
+    ctx.waitUntil(
+      (async () => {
+        try {
+          // 等待15秒后执行第二次
+          await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_STEP_MS));
+          await runChecks();
+          
+          // 等待15秒后执行第三次
+          await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_STEP_MS));
+          await runChecks();
+          
+          // 等待15秒后执行第四次
+          await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_STEP_MS));
+          await runChecks();
+        } finally {
+          await flushLogsToKV(env);
+        }
+      })()
+    );
   }
 };
 
@@ -2212,9 +2341,8 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
       }
     }
 
-    // 记录日志
-    const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
-    logs.unshift({
+    // 记录日志（使用缓存批量写入）
+    await addLogToBuffer(env, {
       time: new Date().toISOString(),
       type: type,
       monitorName: monitorName,
@@ -2226,11 +2354,6 @@ async function executeFailoverPolicy(env, policy, apiConfig, reason, monitorName
       errorCount: errors.length,
       errors: errors.length > 0 ? errors : undefined
     });
-    // 只保留最近 100 条日志
-    if (logs.length > 100) {
-      logs.length = 100;
-    }
-    await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
 
     // 发送通知
     try {
@@ -2501,7 +2624,13 @@ async function checkHealth(monitor) {
 }
 
 // 执行所有健康检查
-async function runHealthChecks(env, ctx = null) {
+async function runHealthChecks(env, ctx = null, options = {}) {
+  const {
+    force = false,
+    flushLogs = true,
+    forcePersistStatus = false
+  } = options;
+
   console.log('[HealthCheck] 开始执行健康检查');
   try {
     const monitors = await getStoredData(env, KEYS.MONITORS);
@@ -2516,12 +2645,10 @@ async function runHealthChecks(env, ctx = null) {
       if (!monitor.enabled) continue;
       
       try {
-        // 检查是否到达检查时间
         const lastStatus = status[monitor.id] || { failureCount: 0, healthy: true };
-        const lastCheck = lastStatus.lastCheck || 0;
-        
-        if (now - lastCheck < monitor.interval * 1000) {
-          continue; // 还没到检查时间
+
+        if (!shouldRunMonitorCheck(monitor, now, force)) {
+          continue;
         }
         
         console.log(`[HealthCheck] 检查监控项: ${monitor.name} (${monitor.url})`);
@@ -2574,16 +2701,13 @@ async function runHealthChecks(env, ctx = null) {
           } else {
             console.error(`[HealthCheck] ${monitor.name} 未找到策略ID: ${monitor.policyId}`);
             // 记录错误到日志，但不中断流程
-            const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
-            logs.unshift({
+            await addLogToBuffer(env, {
               time: new Date().toISOString(),
               type: 'error',
               monitorName: monitor.name,
               reason: `触发切换但未找到策略 (ID: ${monitor.policyId})`,
               errorCount: 1
             });
-            if (logs.length > 100) logs.length = 100;
-            await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
           }
         } else if (!result.healthy && newStatus.failoverTriggered) {
              console.log(`[HealthCheck] ${monitor.name} 依然不健康，但已触发过切换，跳过。`);
@@ -2622,8 +2746,7 @@ async function runHealthChecks(env, ctx = null) {
           }
         }
         
-        // 检查状态是否真正发生变化
-        if (JSON.stringify(lastStatus) !== JSON.stringify(newStatus)) {
+        if (shouldPersistMonitorStatus(lastStatus, newStatus, forcePersistStatus)) {
           status[monitor.id] = newStatus;
           hasStatusChanged = true;
         }
@@ -2641,21 +2764,44 @@ async function runHealthChecks(env, ctx = null) {
     } else {
       console.log('[HealthCheck] 状态无变化');
     }
+    
+    if (flushLogs) {
+      await flushLogsToKV(env);
+    }
   } catch (e) {
     console.error('[HealthCheck] 严重错误:', e);
-    // 尝试记录到 KV 日志
+    // 尝试记录到日志缓存
     try {
-        const logs = await getStoredData(env, KEYS.SWITCH_LOGS);
-        logs.unshift({
+        await addLogToBuffer(env, {
             time: new Date().toISOString(),
             type: 'system_error',
             reason: `健康检查运行崩溃: ${e.message}`,
             errorCount: 1
         });
-        if (logs.length > 100) logs.length = 100;
-        await saveStoredData(env, KEYS.SWITCH_LOGS, logs);
+        if (flushLogs) {
+          await flushLogsToKV(env);
+        }
     } catch (logError) {
         console.error('[HealthCheck] 无法记录崩溃日志:', logError);
     }
   }
 }
+
+export const __testables = {
+  SESSION_TTL_SECONDS,
+  HEALTH_CHECK_STEP_MS,
+  STATUS_PERSIST_INTERVAL_MS,
+  parseSessionIdFromCookie,
+  buildAuthSessionKey,
+  getAuthSession,
+  saveAuthSession,
+  deleteAuthSession,
+  clearAuthSessions,
+  shouldRunMonitorCheck,
+  hasMeaningfulMonitorStatusChange,
+  shouldPersistMonitorStatus,
+  isAuthenticated,
+  runHealthChecks
+};
+
+export default worker;
